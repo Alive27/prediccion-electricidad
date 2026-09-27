@@ -33,4 +33,4 @@ df = df.set_index("datetime").resample("1h").mean(numeric_only=True).reset_index
 
 print(f"\nTotal filas tras agregar a horario: {len(df)}")
 
-df.to_parquet("data/raw/redata_demanda_2024.parquet", index=False)
+df.to_parquet("../data/raw/redata_demanda_2024.parquet", index=False)

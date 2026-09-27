@@ -22,4 +22,4 @@ df["time"] = pd.to_datetime(df["time"], utc=True)
 print(df.head())
 print(f"Filas descargadas: {len(df)}")
 
-df.to_parquet("data/raw/openmeteo_madrid_2024.parquet", index=False)
+df.to_parquet("../data/raw/openmeteo_madrid_2024.parquet", index=False)
