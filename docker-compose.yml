@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./src/api
+    ports:
+      - "8000:8000"
+    # Esto inyecta tu archivo de claves oculto en el contenedor
+    env_file:
+      - .env
+
+  dashboard:
+    build:
+      context: ./src/dashboard
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    # El dashboard depende de que la API esté funcionando
+    depends_on:
+      - api
