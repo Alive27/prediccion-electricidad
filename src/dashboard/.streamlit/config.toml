@@ -1,0 +1,12 @@
+# Scoped native palettes; custom System/Claro/Oscuro uses the same tokens.
+[theme.light]
+primaryColor = "#2466ce"
+backgroundColor = "#f6f7f9"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#202630"
+
+[theme.dark]
+primaryColor = "#8ab8ff"
+backgroundColor = "#17191e"
+secondaryBackgroundColor = "#202329"
+textColor = "#f1f2f5"
