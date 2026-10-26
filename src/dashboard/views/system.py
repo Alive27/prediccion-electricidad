@@ -77,8 +77,9 @@ def render(datasets: dict) -> None:
                         f"{status['last_demand_age_hours']:.1f} h"
                         if status.get("last_demand_age_hours") is not None else "Sin dato",
                         f"Límite {status.get('freshness_limit_hours', '—')} h")
-        st.caption(f"Open-Meteo consultado {_local_time(status.get('weather_source_checked_at_utc'))}; "
-                   "temperatura a 2 m de Madrid, usada internamente por el modelo.")
+        st.caption(
+            f"Open-Meteo consultado {_local_time(status.get('weather_source_checked_at_utc'))}; "
+            "temperatura a 2 m de Madrid, usada internamente por el modelo.")
         if status.get("source_notice"):
             st.warning(status["source_notice"])
         if status.get("reason"):

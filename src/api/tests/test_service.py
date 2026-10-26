@@ -97,9 +97,12 @@ class DemandServiceTests(unittest.TestCase):
             service = self.make_service(Path(directory))
             service.esios_token = "test-only-token"
             now = pd.Timestamp.now(tz="UTC").floor("5min")
+
             def response_for(url, **kwargs):
                 indicator_id = int(url.rsplit("/", 1)[-1])
-                name = "Demanda real Peninsular" if indicator_id == 1293 else "Demanda prevista Peninsular"
+                name = (
+                    "Demanda real Peninsular"
+                    if indicator_id == 1293 else "Demanda prevista Peninsular")
                 body = {"indicator": {
                     "id": indicator_id, "name": name, "values_updated_at": now.isoformat(),
                     "magnitud": [{"name": "Potencia", "id": 23}],
@@ -152,8 +155,14 @@ class DemandServiceTests(unittest.TestCase):
         service.demand_data = lambda: pd.DataFrame({
             "timestamp_utc": [stamp, stamp + pd.Timedelta(minutes=5)],
             "value": [30_000., 30_100.]})
-        service.esios_curves = lambda hours: {"curves": {"real": {"status": "connected",
-            "records": [{"timestamp_utc": stamp.isoformat(), "demand_mw": 30_500.}]}}}
+        service.esios_curves = lambda hours: {
+            "curves": {
+                "real": {
+                    "status": "connected",
+                    "records": [{"timestamp_utc": stamp.isoformat(), "demand_mw": 30_500.}],
+                }
+            }
+        }
         comparison = service.compare_demand_sources(48)
         self.assertEqual(len(comparison["records"]), 1)
         self.assertEqual(comparison["records"][0]["difference_mw"], -500.)
@@ -240,7 +249,10 @@ class DemandServiceTests(unittest.TestCase):
                 self.assertTrue((stamps.to_series().diff().dropna() == pd.Timedelta(hours=1)).all())
                 self.assertEqual(stamps[0], origin + pd.Timedelta(hours=1))
                 self.assertEqual(stamps[-1], origin + pd.Timedelta(hours=horizon))
-                self.assertTrue(np.isfinite([row["demand_mw"] for row in forecast["predictions"]]).all())
+                self.assertTrue(
+                    np.isfinite(
+                        [row["demand_mw"] for row in forecast["predictions"]]
+                    ).all())
                 self.assertEqual(forecast["prediction_mode"], "current_forecast")
 
     def test_stale_data_requires_explicit_historical_simulation_and_returns_48(self):

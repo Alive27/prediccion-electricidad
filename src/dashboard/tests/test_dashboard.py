@@ -284,9 +284,14 @@ class ViewTests(unittest.TestCase):
                       "forecast_origin_utc": origin.isoformat(),
                       "generated_at_utc": generated.isoformat(),
                       "prediction_mode": "current_forecast",
-                      "predictions": [{"timestamp_utc": (origin + pd.Timedelta(hours=hour)).isoformat(),
-                                       "demand_mw": 31_000.0 + hour}
-                                      for hour in range(1, 6)]}
+                      "predictions": [
+                          {
+                              "timestamp_utc": (
+                                  origin + pd.Timedelta(hours=hour)).isoformat(),
+                              "demand_mw": 31_000.0 + hour,
+                          }
+                          for hour in range(1, 6)
+                      ]}
         status = {"api": True, "model_loaded": True, "model_schema_valid": True,
                   "data_available": True, "last_demand_utc": origin.isoformat(),
                   "demand_fresh": True, "future_forecast_available": True}

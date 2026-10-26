@@ -201,35 +201,46 @@ class DemandService:
                 payload = response.json()
                 indicator = payload.get("indicator", {})
                 if int(indicator.get("id", -1)) != indicator_id:
-                    raise DataUnavailable(f"ESIOS respondió con un indicador distinto de {indicator_id}.")
+                    raise DataUnavailable(
+                        f"ESIOS respondió con un indicador distinto de {indicator_id}.")
                 name = str(indicator.get("name") or indicator.get("short_name") or "").lower()
                 expected = "real" if key == "real" else "prevista"
                 if expected not in name:
-                    raise DataUnavailable(f"El indicador {indicator_id} no identifica demanda {expected}.")
-                scope = " ".join([name, *(str(geo.get("geo_name", ""))
-                                         for geo in indicator.get("geos", []))]).lower()
+                    raise DataUnavailable(
+                        f"El indicador {indicator_id} no identifica demanda {expected}.")
+                scope = " ".join([
+                    name,
+                    *(str(geo.get("geo_name", "")) for geo in indicator.get("geos", [])),
+                ]).lower()
                 if "peninsul" not in scope:
                     raise DataUnavailable(
-                        f"El indicador {indicator_id} no acredita ámbito peninsular en su respuesta.")
+                        f"El indicador {indicator_id} no acredita ámbito peninsular "
+                        "en su respuesta.")
                 magnitudes = indicator.get("magnitud", [])
-                if magnitudes and not any("potencia" in str(item.get("name", "")).lower()
-                                          for item in magnitudes if isinstance(item, dict)):
-                    raise DataUnavailable(f"El indicador {indicator_id} no declara magnitud de potencia.")
+                if magnitudes and not any(
+                        "potencia" in str(item.get("name", "")).lower()
+                        for item in magnitudes if isinstance(item, dict)):
+                    raise DataUnavailable(
+                        f"El indicador {indicator_id} no declara magnitud de potencia.")
                 values = indicator.get("values")
                 if not isinstance(values, list) or not values:
-                    raise DataUnavailable(f"ESIOS no devolvió valores para el indicador {indicator_id}.")
+                    raise DataUnavailable(
+                        f"ESIOS no devolvió valores para el indicador {indicator_id}.")
                 frame = pd.DataFrame(values)
                 time_col = "datetime_utc" if "datetime_utc" in frame else "datetime"
                 if time_col not in frame or "value" not in frame:
                     raise DataUnavailable("La respuesta ESIOS no contiene datetime y value.")
                 frame = pd.DataFrame({
                     "timestamp_utc": pd.to_datetime(frame[time_col], utc=True, errors="coerce"),
-                    "value": pd.to_numeric(frame.value, errors="coerce")})
+                    "value": pd.to_numeric(frame.value, errors="coerce"),
+                })
                 frame = frame.dropna().loc[lambda x: np.isfinite(x.value) & x.value.ge(0)]
                 frame = frame.loc[frame.timestamp_utc.le(pd.Timestamp(now))]
-                frame = frame.drop_duplicates("timestamp_utc", keep="last").sort_values("timestamp_utc")
+                frame = frame.drop_duplicates(
+                    "timestamp_utc", keep="last").sort_values("timestamp_utc")
                 if frame.empty:
-                    raise DataUnavailable(f"El indicador {indicator_id} no contiene observaciones válidas.")
+                    raise DataUnavailable(
+                        f"El indicador {indicator_id} no contiene observaciones válidas.")
                 self._esios_cache[key] = frame
                 updated = indicator.get("values_updated_at")
                 update_timestamp = pd.Timestamp(updated) if updated else None
@@ -269,15 +280,23 @@ class DemandService:
             frame = self._esios_cache[key]
             if frame.empty:
                 frame = self._esios_read_cache(key)
-            selected = frame.loc[frame.timestamp_utc.between(start, end)] if not frame.empty else frame
+            selected = (
+                frame.loc[frame.timestamp_utc.between(start, end)] if not frame.empty else frame
+            )
             meta = dict(self._esios_meta[key])
             if not meta.get("resolution_minutes") and not selected.empty:
                 meta["resolution_minutes"] = self._resolution_minutes(selected)
             origin = ("live" if meta.get("status") == "connected"
                       else "cache" if not selected.empty else "none")
-            curves[key] = {"indicator_id": indicator_id, "data_origin": origin, **meta,
-                           "records": [{"timestamp_utc": stamp.isoformat(), "demand_mw": float(value)}
-                                       for stamp, value in zip(selected.timestamp_utc, selected.value)]}
+            curves[key] = {
+                "indicator_id": indicator_id,
+                "data_origin": origin,
+                **meta,
+                "records": [
+                    {"timestamp_utc": stamp.isoformat(), "demand_mw": float(value)}
+                    for stamp, value in zip(selected.timestamp_utc, selected.value)
+                ],
+            }
         return {"geography": "Península · indicador ESIOS específico", "unit": "MW",
                 "requested_hours": hours, "retrieved_at_utc": end.isoformat(), "curves": curves}
 
@@ -296,8 +315,12 @@ class DemandService:
         else:
             official["timestamp_utc"] = pd.to_datetime(official.timestamp_utc, utc=True)
             official["demand_mw"] = pd.to_numeric(official.demand_mw, errors="coerce")
-            pairs = observed.merge(official.rename(columns={"demand_mw": "esios_mw"}),
-                                  on="timestamp_utc", how="inner", validate="one_to_one")
+            pairs = observed.merge(
+                official.rename(columns={"demand_mw": "esios_mw"}),
+                on="timestamp_utc",
+                how="inner",
+                validate="one_to_one",
+            )
             pairs["difference_mw"] = pairs.redata_mw - pairs.esios_mw
         return {"window_hours": hours, "match_rule": "timestamp UTC exacto; sin redondeo",
                 "records": [{"timestamp_utc": row.timestamp_utc.isoformat(),
@@ -578,8 +601,11 @@ class DemandService:
             "timestamp_utc": pd.to_datetime(hourly["time"], utc=True, errors="coerce"),
             "temperature_2m": pd.to_numeric(hourly["temperature_2m"], errors="coerce"),
         })
-        return self._clean_weather(frame).loc[lambda data:
-            data.timestamp_utc.between(start, end)].reset_index(drop=True)
+        return (
+            self._clean_weather(frame)
+            .loc[lambda data: data.timestamp_utc.between(start, end)]
+            .reset_index(drop=True)
+        )
 
     @staticmethod
     def _clean_weather(frame: pd.DataFrame) -> pd.DataFrame:
@@ -716,7 +742,8 @@ class DemandService:
         demand = self._clean_demand(self.demand_data(), datetime.now(UTC))
         weather = self.weather_data()
         if demand.empty:
-            raise DataUnavailable("Faltan observaciones de demanda válidas; no se generó predicción.")
+            raise DataUnavailable(
+                "Faltan observaciones de demanda válidas; no se generó predicción.")
         weather = self._clean_weather(weather)
         origin = demand.timestamp_utc.iloc[-1]
         age = pd.Timestamp.now(tz="UTC") - origin
@@ -778,7 +805,8 @@ class DemandService:
                 "prediction_mode": "historical_simulation" if stale else "current_forecast",
                 "simulation_reference_utc": origin.isoformat() if stale else None,
                 "demand_age_hours": age.total_seconds() / 3600,
-                "weather_input": "Open-Meteo Archive reanalysis" if stale else "Open-Meteo forecast"}
+                "weather_input": (
+                    "Open-Meteo Archive reanalysis" if stale else "Open-Meteo forecast")}
 
     def evaluation(self):
         if self._evaluation_cached_at is not None and datetime.now(UTC) - (

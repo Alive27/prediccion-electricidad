@@ -168,7 +168,9 @@ def render(datasets: dict) -> None:
     horizon = st.select_slider("Horizonte de predicción", options=[5, 12, 24, 48],
                                value=48, format_func=lambda value: f"{value} horas",
                                key="prediction_horizon")
-    st.caption(f"Se solicitarán {horizon} predicciones horarias al modelo; resolución de salida: 1 hora.")
+    st.caption(
+        f"Se solicitarán {horizon} predicciones horarias al modelo; "
+        "resolución de salida: 1 hora.")
 
     forecast = st.session_state.get("demand_forecast")
     latest_observation = status.get("last_demand_utc")
@@ -212,7 +214,9 @@ def render(datasets: dict) -> None:
         return
     frame = prediction_frame(forecast)
     if len(frame) != horizon:
-        st.error(f"La API no devolvió {horizon} horas completas. No se presentan resúmenes parciales.")
+        st.error(
+            f"La API no devolvió {horizon} horas completas. "
+            "No se presentan resúmenes parciales.")
         return
 
     simulation = forecast.get("prediction_mode") == "historical_simulation"

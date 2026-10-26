@@ -127,8 +127,8 @@ def official_demand_curves(payload: dict, key: str = "official_demand_curves",
     if not real_records and fallback_records:
         fallback = pd.DataFrame(fallback_records)
         if {"timestamp_utc", "demand_mw"}.issubset(fallback.columns):
-            fallback["timestamp_utc"] = pd.to_datetime(fallback.timestamp_utc, utc=True,
-                                                        errors="coerce")
+            fallback["timestamp_utc"] = pd.to_datetime(
+                fallback.timestamp_utc, utc=True, errors="coerce")
             fallback["demand_mw"] = pd.to_numeric(fallback.demand_mw, errors="coerce")
             fallback = fallback.dropna().sort_values("timestamp_utc")
             if prediction is not None and not prediction.empty:
