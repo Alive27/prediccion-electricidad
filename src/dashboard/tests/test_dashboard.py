@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import requests
 from streamlit.testing.v1 import AppTest
 
 DIRECTORY = Path(__file__).resolve().parents[1]
@@ -168,13 +169,24 @@ class ViewTests(unittest.TestCase):
                         self.assertEqual(len(app.get("file_uploader")),
                                          len(absent_kinds) if page == "Datos" else 0)
 
-    def test_prediction_is_pending_and_generation_disabled(self):
-        app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-        self.assertEqual(len(app.get("file_uploader")), 0)
-        app.sidebar.button(key="nav_4").click().run()
-        generate = next(button for button in app.button if button.label == "Generar predicción")
-        self.assertTrue(generate.disabled)
-        self.assertEqual(len(app.get("plotly_chart")), 0)
+    def test_stale_demand_disables_future_prediction(self):
+        status = {"api": True, "model_loaded": True, "data_available": True,
+                  "last_demand_utc": "2024-12-31T22:00:00+00:00",
+                  "future_forecast_available": False,
+                  "reason": "La demanda más reciente supera el límite de frescura."}
+        model = {"model_type": "RandomForestRegressor",
+                 "artifact_version": "modelo_demanda_v01"}
+        with patch("services.api_client.cached_status", return_value=status), \
+                patch("services.api_client.cached_model_info", return_value=model), \
+                patch("services.api_client.cached_evaluation",
+                      side_effect=requests.ConnectionError):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
+            self.assertEqual(len(app.get("file_uploader")), 0)
+            app.sidebar.button(key="nav_4").click().run()
+            generate = next(button for button in app.button
+                            if button.label == "Generar previsión")
+            self.assertTrue(generate.disabled)
+            self.assertEqual(len(app.get("plotly_chart")), 0)
 
     def test_manual_source_survives_navigation_and_refresh(self):
         raw_path = DIRECTORY.parents[1] / "data" / "raw" / FILENAMES["demand"]

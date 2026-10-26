@@ -64,11 +64,24 @@ def dataset_status(dataset: Dataset) -> tuple[str, str]:
 
 
 def project_status(datasets: dict[str, Dataset], dashboard: bool = False,
-                   compact: bool = False) -> None:
+                   compact: bool = False, api_status: dict | None = None,
+                   model_type: str | None = None) -> None:
     rows = [("Dashboard", "Operativo", "success")] if dashboard else []
     rows += [(label, *dataset_status(datasets[kind]))
              for kind, label in (("demand", "REData"), ("weather", "Open-Meteo"))]
-    rows += [("Modelo predictivo", "Pendiente", "pending"), ("API", "Pendiente", "pending")]
+    if api_status is None:
+        rows += [("Modelo predictivo", "Sin conexión", "pending"),
+                 ("API", "Sin conexión", "pending")]
+    else:
+        loaded = api_status.get("model_loaded", False)
+        forecast = api_status.get("future_forecast_available", False)
+        rows += [("Modelo predictivo", model_type if loaded and model_type else
+                  "Cargado" if loaded else "No disponible",
+                  "success" if loaded else "error"),
+                 ("API", "Operativa" if api_status.get("api") else "No disponible",
+                  "success" if api_status.get("api") else "error"),
+                 ("Previsión futura", "Disponible" if forecast else "Solo histórico",
+                  "success" if forecast else "warning")]
     contents = "".join(status_html(*row) for row in rows)
     layout = "status-grid" if compact else "status-list"
     st.markdown(f'<div class="{layout}">{contents}</div>', unsafe_allow_html=True)

@@ -1,0 +1,67 @@
+"""HTTP contract smoke checks using the real artifact and local historical files."""
+
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+
+API_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = API_DIR.parents[1]
+sys.path.insert(0, str(API_DIR))
+import main as api  # noqa: E402
+
+
+@unittest.skipUnless(
+    (PROJECT_ROOT / "data" / "raw" / "redata_demanda_2024.parquet").is_file()
+    and (PROJECT_ROOT / "data" / "raw" / "openmeteo_madrid_2024.parquet").is_file(),
+    "Las pruebas HTTP con datos reales requieren los Parquet locales ignorados por Git.",
+)
+class ApiContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.model_patch = patch.object(
+            api, "MODEL_PATH", PROJECT_ROOT / "models" / "modelo_demanda_v01.joblib")
+        cls.data_patch = patch.object(api, "DATA_DIR", PROJECT_ROOT / "data" / "raw")
+        cls.model_patch.start()
+        cls.data_patch.start()
+        cls.client = TestClient(api.app)
+        cls.client.__enter__()
+        cls.service = api.app.state.service
+        cls.service.demand_data = cls.service.local_demand
+        cls.service.weather_data = cls.service.local_weather
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        cls.model_patch.stop()
+        cls.data_patch.stop()
+
+    def test_model_and_health_report_verified_stale_artifact(self):
+        info = self.client.get("/model/info")
+        self.assertEqual(info.status_code, 200)
+        self.assertEqual(info.json()["model_type"], "RandomForestRegressor")
+        self.assertEqual(len(info.json()["features"]), 8)
+        health = self.client.get("/health").json()
+        self.assertEqual(health["last_demand_utc"], "2024-12-31T22:00:00+00:00")
+        self.assertFalse(health["future_forecast_available"])
+
+    def test_history_and_prediction_validation(self):
+        history = self.client.get("/history", params={"limit": 2})
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(len(history.json()["records"]), 2)
+        invalid = self.client.post("/predict", json={"horizon_hours": 49})
+        self.assertEqual(invalid.status_code, 422)
+        stale = self.client.post("/predict", json={"horizon_hours": 1})
+        self.assertEqual(stale.status_code, 503)
+
+    def test_historical_evaluation_uses_real_model(self):
+        evaluation = self.client.get("/evaluation")
+        self.assertEqual(evaluation.status_code, 200)
+        self.assertEqual(evaluation.json()["test_records"], 1723)
+        self.assertAlmostEqual(evaluation.json()["mae_mw"], 500.2053, places=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

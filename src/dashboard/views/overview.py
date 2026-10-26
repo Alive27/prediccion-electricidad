@@ -1,6 +1,7 @@
 """Overview with actual demand and Madrid temperature observations."""
 
 import streamlit as st
+import requests
 
 from components import charts
 from components.cards import demand_metrics, metric, project_status
@@ -8,6 +9,7 @@ from components.filters import period_filter
 from components.layout import header, section
 from components.states import dataset_ready
 from services.analysis import calendar_profile, select_period
+from services import api_client
 from utils.formatting import number, timestamp
 
 
@@ -63,4 +65,12 @@ def render(datasets: dict) -> None:
                 st.info("No hay temperatura disponible en este periodo.")
     with st.container(border=True, key="panel-overview-status"):
         section("Estado del proyecto")
-        project_status(datasets, compact=True)
+        api_status = None
+        model_type = None
+        try:
+            api_status = api_client.cached_status()
+            model_type = api_client.cached_model_info().get("model_type")
+        except (requests.RequestException, ValueError):
+            pass
+        project_status(datasets, compact=True, api_status=api_status,
+                       model_type=model_type)

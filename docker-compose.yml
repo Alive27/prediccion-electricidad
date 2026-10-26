@@ -1,22 +1,34 @@
-version: '3.8'
-
 services:
   api:
     build:
       context: ./src/api
     ports:
       - "8000:8000"
-    # Esto inyecta tu archivo de claves oculto en el contenedor
-    env_file:
-      - .env
+    environment:
+      MODEL_PATH: /models/modelo_demanda_v01.joblib
+      DATA_DIR: /data/raw
+      MAX_DEMAND_AGE_HOURS: ${MAX_DEMAND_AGE_HOURS:-6}
+      DEMAND_LOOKBACK_DAYS: ${DEMAND_LOOKBACK_DAYS:-10}
+    volumes:
+      - ./models:/models:ro
+      - ./data/raw:/data/raw:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   dashboard:
     build:
       context: ./src/dashboard
     ports:
       - "8501:8501"
-    env_file:
-      - .env
-    # El dashboard depende de que la API esté funcionando
+    environment:
+      API_BASE_URL: http://api:8000
+      API_TIMEOUT_SECONDS: ${API_TIMEOUT_SECONDS:-8}
+    volumes:
+      - ./data/raw:/data/raw:ro
     depends_on:
-      - api
+      api:
+        condition: service_healthy
