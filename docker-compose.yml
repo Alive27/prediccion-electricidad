@@ -7,11 +7,15 @@ services:
     environment:
       MODEL_PATH: /models/modelo_demanda_v01.joblib
       DATA_DIR: /data/raw
+      LIVE_DEMAND_CACHE_PATH: /cache/redata_demanda_live.parquet
+      ESIOS_API_TOKEN: ${ESIOS_API_TOKEN:-}
+      ESIOS_CACHE_DIR: /cache
       MAX_DEMAND_AGE_HOURS: ${MAX_DEMAND_AGE_HOURS:-6}
-      DEMAND_LOOKBACK_DAYS: ${DEMAND_LOOKBACK_DAYS:-10}
+      DEMAND_LOOKBACK_DAYS: ${DEMAND_LOOKBACK_DAYS:-14}
     volumes:
       - ./models:/models:ro
       - ./data/raw:/data/raw:ro
+      - ./data/cache:/cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
       interval: 30s
@@ -26,7 +30,7 @@ services:
       - "8501:8501"
     environment:
       API_BASE_URL: http://api:8000
-      API_TIMEOUT_SECONDS: ${API_TIMEOUT_SECONDS:-8}
+      API_TIMEOUT_SECONDS: ${API_TIMEOUT_SECONDS:-35}
     volumes:
       - ./data/raw:/data/raw:ro
     depends_on:

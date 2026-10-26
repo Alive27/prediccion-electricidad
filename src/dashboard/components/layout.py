@@ -7,7 +7,7 @@ import streamlit as st
 
 from components.icons import svg
 
-PAGES = ["Resumen", "Demanda", "Meteorología", "Análisis histórico", "Predicción",
+PAGES = ["Resumen", "Demanda", "Análisis histórico", "Modelo", "Precios",
          "Datos", "Estado del sistema"]
 TOKENS = {
     "Claro": "--scheme:light;--paper:#f6f7f9;--card:#ffffff;--sidebar:#fcfcfd;"
@@ -21,8 +21,8 @@ TOKENS = {
 }
 NAV_GROUPS = (
     ("EXPLORAR", (("Resumen", "dashboard"), ("Demanda", "show_chart"),
-                  ("Meteorología", "thermostat"), ("Análisis histórico", "analytics"))),
-    ("MODELO", (("Predicción", "model_training"),)),
+                  ("Análisis histórico", "analytics"))),
+    ("MODELO", (("Modelo", "model_training"), ("Precios", "pending"))),
     ("SISTEMA", (("Datos", "database"), ("Estado del sistema", "monitor_heart"))),
 )
 
@@ -51,8 +51,8 @@ def sidebar() -> tuple[str, str, bool]:
             theme = st.selectbox("Tema", ["Sistema", "Claro", "Oscuro"], key="appearance")
             reload_requested = st.button("Actualizar datos", icon=":material/refresh:",
                                          type="tertiary", key="refresh_data",
-                                         help="Renueva la lectura de los históricos en memoria.")
-            st.caption("Datos históricos reales")
+                                         help="Actualiza fuentes y recarga el histórico.")
+            st.caption("REData · Open-Meteo · Parquet 2024")
     return page, theme, reload_requested
 
 

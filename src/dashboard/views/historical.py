@@ -8,15 +8,16 @@ from components.filters import period_filter
 from components.layout import header, section
 from components.states import dataset_ready
 from services.analysis import monthly_profile
-from services.data_quality import aligned_data
 from utils.formatting import WEEKDAYS, number, timestamp
 
 
 def render(datasets: dict) -> None:
-    header("Análisis histórico", "Patrones de consumo y relación con la temperatura de Madrid")
+    header("Análisis histórico", "Patrones observados en el histórico de demanda de 2024")
     dataset = datasets["demand"]
     if not dataset_ready(dataset):
         return
+    st.info(f"Periodo local del archivo: {dataset.frame.timestamp.min():%d/%m/%Y} — "
+            f"{dataset.frame.timestamp.max():%d/%m/%Y}. No representa la demanda actual.")
     frame = period_filter(dataset, "historical", "Todo el periodo")
     if frame.empty:
         return
@@ -40,17 +41,3 @@ def render(datasets: dict) -> None:
         row = frame.loc[index]
         extremes.append((label, number(row.value), "MW", timestamp(row.timestamp, True)))
     metric_grid(extremes)
-    with st.container(border=True, key="panel-historical-joint"):
-        section("Temperatura y demanda", "Observaciones simultáneas · análisis descriptivo.")
-        joined, explanation = aligned_data(dataset, datasets["weather"])
-        has_common = not joined.empty
-        if has_common:
-            joined = joined.loc[joined.timestamp.isin(frame.timestamp)]
-        if joined.empty:
-            st.info("No hay instantes comunes en el periodo seleccionado."
-                    if has_common else explanation)
-        else:
-            st.caption(f"{number(len(joined))} instantes comunes en el periodo. {explanation}")
-            charts.temperature_demand(joined)
-            st.caption("La relación observada no demuestra causalidad. También influyen "
-                       "la hora, el calendario y otros factores no analizados aquí.")

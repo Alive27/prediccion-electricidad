@@ -5,8 +5,10 @@ from datetime import date, timedelta
 import pandas as pd
 
 
-PERIODS = ["24 horas", "7 días", "30 días", "Todo el periodo", "Personalizado"]
-HOURS = {"24 horas": 24, "7 días": 168, "30 días": 720}
+PERIODS = ["24 horas", "48 horas", "3 días", "7 días", "30 días",
+           "Todo el periodo", "Personalizado"]
+HOURS = {"24 horas": 24, "48 horas": 48, "3 días": 72,
+         "7 días": 168, "30 días": 720}
 
 
 def select_period(frame: pd.DataFrame, period: str,
