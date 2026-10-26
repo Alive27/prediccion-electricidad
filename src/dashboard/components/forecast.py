@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from components.charts import base_figure
+from components.charts import base_figure, show as show_chart
 
 
 LOCAL_ZONE = "Europe/Madrid"
@@ -29,22 +29,28 @@ def render_summary(forecast: dict, frame: pd.DataFrame) -> None:
         return
     peak = frame.loc[frame.demand_mw.idxmax()]
     valley = frame.loc[frame.demand_mw.idxmin()]
-    first_six_mean = frame.head(6).demand_mw.mean()
     origin = pd.Timestamp(forecast["forecast_origin_utc"]).tz_convert(LOCAL_ZONE)
     generated = pd.Timestamp(forecast["generated_at_utc"]).tz_convert(LOCAL_ZONE)
-    cols = st.columns(6)
-    cols[0].metric("Máximo previsto", f"{peak.demand_mw:,.0f} MW",
+    cols = st.columns(5)
+    simulation = forecast.get("prediction_mode") == "historical_simulation"
+    mode_label = "Simulación" if simulation else "Previsto"
+    cols[0].metric(f"Máximo {mode_label.lower()}", f"{peak.demand_mw:,.0f} MW",
                    peak.timestamp_local.strftime("%d/%m %H:%M · hora local"))
-    cols[1].metric("Mínimo previsto", f"{valley.demand_mw:,.0f} MW",
+    cols[1].metric(f"Mínimo {mode_label.lower()}", f"{valley.demand_mw:,.0f} MW",
                    valley.timestamp_local.strftime("%d/%m %H:%M · hora local"))
-    cols[2].metric("Rango previsto", f"{peak.demand_mw - valley.demand_mw:,.0f} MW",
+    cols[2].metric(f"Rango {mode_label.lower()}", f"{peak.demand_mw - valley.demand_mw:,.0f} MW",
                    "máximo menos mínimo")
-    cols[3].metric("Media próximas 6 h", f"{first_six_mean:,.0f} MW",
-                   f"calculada con {min(6, len(frame))} horas")
-    cols[4].metric("Origen real", origin.strftime("%d/%m %H:%M"), "Europe/Madrid")
-    cols[5].metric("Horizonte / modelo", f"{len(frame)} h", forecast.get("model", "—"))
+    cols[3].metric("Referencia de simulación" if simulation else "Origen real",
+                   origin.strftime("%d/%m %H:%M"), "Europe/Madrid")
+    cols[4].metric("Horizonte / modelo", f"{len(frame)} h", forecast.get("model", "—"))
     st.caption(f"Generada el {generated:%d/%m/%Y %H:%M} · hora Europe/Madrid · "
                f"origen UTC {forecast['forecast_origin_utc']} · unidad MW")
+    if simulation:
+        reference = pd.Timestamp(forecast["simulation_reference_utc"]).tz_convert(LOCAL_ZONE)
+        horizon = forecast.get("horizon_hours", len(frame))
+        st.warning(f"SIMULACIÓN HISTÓRICA: no representa las próximas {horizon} horas actuales. "
+                   f"Referencia: {reference:%d/%m/%Y %H:%M %Z}; "
+                   f"temperatura: {forecast.get('weather_input', 'histórica')}.")
 
 
 def render_timeline(history_records: list[dict], forecast: dict,
@@ -60,47 +66,70 @@ def render_timeline(history_records: list[dict], forecast: dict,
         ].tail(168)
         if not observed.empty:
             local = observed.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
-            axis = local.dt.tz_localize(None)
+            axis = observed.timestamp_utc.dt.tz_convert("UTC").dt.tz_localize(None)
             custom = [[time.strftime("%d/%m/%Y %H:%M %Z"), utc.isoformat()]
                       for time, utc in zip(local, observed.timestamp_utc)]
             figure.add_trace(go.Scatter(
-                x=axis, y=observed.demand_mw, mode="lines", name="Demanda real",
+                x=axis, y=observed.demand_mw, mode="lines", name="Demanda observada",
                 line={"color": "#4385e5", "width": 2.5},
                 customdata=custom,
-                hovertemplate="%{customdata[0]} (Europe/Madrid)<br>"
-                              "UTC %{customdata[1]}<br><b>%{y:,.0f} MW</b><extra></extra>",
+                hovertemplate="%{customdata[0]} (Europe/Madrid)<br>UTC %{customdata[1]}<br>"
+                              "Demanda real · <b>%{y:,.0f} MW</b><extra></extra>",
             ))
     local_forecast = predictions.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
     figure.add_trace(go.Scatter(
-        x=local_forecast.dt.tz_localize(None), y=predictions.demand_mw,
-        mode="lines+markers", name="Previsión",
+        x=predictions.timestamp_utc.dt.tz_convert("UTC").dt.tz_localize(None),
+        y=predictions.demand_mw,
+        mode="lines+markers",
+        name=("Simulación histórica" if forecast.get("prediction_mode") ==
+              "historical_simulation" else "Previsión"),
         line={"color": "#c47d22", "width": 2.7, "dash": "dash"},
         marker={"size": 5},
         customdata=[[time.strftime("%d/%m/%Y %H:%M %Z"), utc.isoformat()]
                     for time, utc in zip(local_forecast, predictions.timestamp_utc)],
-        hovertemplate="%{customdata[0]} (Europe/Madrid)<br>"
-                      "UTC %{customdata[1]}<br><b>%{y:,.0f} MW</b><extra></extra>",
+        hovertemplate="%{customdata[0]} (Europe/Madrid)<br>UTC %{customdata[1]}<br>"
+                      "Demanda estimada · <b>%{y:,.0f} MW</b><extra></extra>",
     ))
-    local_origin = origin.tz_convert(LOCAL_ZONE).tz_localize(None)
-    figure.add_vline(x=local_origin, line_dash="dot", line_color="#718096", line_width=1.5)
-    figure.add_annotation(x=local_origin, y=1, yref="paper", text="Inicio previsión",
+    origin_axis = origin.tz_convert("UTC").tz_localize(None)
+    figure.add_vline(x=origin_axis, line_dash="dot", line_color="#718096", line_width=1.5)
+    figure.add_annotation(x=origin_axis, y=1, yref="paper", text=(
+        "Referencia de simulación" if forecast.get("prediction_mode") ==
+        "historical_simulation" else "Última demanda real"),
                           showarrow=False, xanchor="left", yanchor="bottom",
                           font={"size": 11, "color": "#596575"})
-    figure.update_xaxes(title="Hora local · Europe/Madrid", showgrid=False)
+    tick_times = pd.concat([
+        observed.timestamp_utc if history_records else pd.Series(dtype="datetime64[ns, UTC]"),
+        predictions.timestamp_utc,
+    ]).drop_duplicates().sort_values()
+    tick_times = tick_times.iloc[::max(1, len(tick_times) // 7)]
+    figure.update_xaxes(
+        title="Hora peninsular · Europe/Madrid", showgrid=False,
+        tickvals=tick_times.dt.tz_convert("UTC").dt.tz_localize(None),
+        ticktext=tick_times.dt.tz_convert(LOCAL_ZONE).dt.strftime("%d/%m %H:%M %Z"),
+    )
     figure.update_layout(showlegend=True, legend={"orientation": "h", "y": 1.12},
                          hovermode="x unified")
-    st.plotly_chart(figure, width="stretch", theme=None, key=key,
-                    config={"displaylogo": False, "displayModeBar": True,
-                            "scrollZoom": True, "responsive": True})
+    show_chart(figure, key)
 
 
-def is_current(forecast: dict) -> bool:
+def is_current(forecast: dict, latest_observation_utc: str | None = None) -> bool:
     """A saved forecast is current only while its future timestamps remain ahead."""
     frame = prediction_frame(forecast)
     if frame.empty:
         return False
     generated = pd.Timestamp(forecast["generated_at_utc"])
     now = pd.Timestamp.now(tz="UTC")
-    return now - generated.tz_convert("UTC") <= pd.Timedelta(hours=1) and (
-        frame.timestamp_utc.max() > now
-    )
+    simulation = forecast.get("prediction_mode") == "historical_simulation"
+    current = (now - generated.tz_convert("UTC") <= pd.Timedelta(hours=1)
+               and (simulation or frame.timestamp_utc.max() > now))
+    if simulation:
+        return bool(current)
+    if latest_observation_utc:
+        origin = pd.Timestamp(forecast.get("forecast_origin_utc"))
+        latest = pd.Timestamp(latest_observation_utc)
+        if origin.tzinfo is None:
+            origin = origin.tz_localize("UTC")
+        if latest.tzinfo is None:
+            latest = latest.tz_localize("UTC")
+        current = current and latest.tz_convert("UTC") <= origin.tz_convert("UTC")
+    return bool(current)

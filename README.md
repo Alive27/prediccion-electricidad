@@ -1,98 +1,81 @@
-# ⚡ Predicción de demanda y precio de la electricidad en España
+# Predicción de demanda eléctrica peninsular
 
-<!-- Opcional: Aquí puedes añadir un banner del proyecto o insignias de las tecnologías -->
-![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)
-![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=Streamlit&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+Aplicación de preview para consultar demanda real de la España peninsular, analizar el histórico de 2024 y generar una previsión horaria de 5, 12, 24 o 48 horas con el modelo entrenado existente. FastAPI obtiene y valida las fuentes; Streamlit consume la API interna.
 
----
+## Datos y modelo
 
-## 🎯 Objetivo
+- **Demanda reciente peninsular:** endpoint GET [`/es/datos/demanda/evolucion`](https://apidatos.ree.es/es/datos/demanda/evolucion), con `time_trunc=hour`, `geo_trunc=electric_system`, `geo_limit=peninsular` y `geo_ids=8741`. El widget `demanda-tiempo-real` devuelve datos nacionales y falla con HTTP 502 al aplicarle el filtro peninsular en esta consulta; no se usa esa serie nacional para el modelo peninsular. `evolucion` devuelve el indicador horario regional `Demanda`; no requiere token. El servicio conserva en caché el instante UTC y el `last-update` que informa REData.
+- **Curvas recientes oficiales:** ESIOS `/indicators/1293` (demanda real peninsular) y `/indicators/544` (demanda prevista peninsular), conservando los instantes recibidos y midiendo la resolución desde ellos. Requieren `ESIOS_API_TOKEN` personal. El endpoint interno `/curves` informa el estado y error de cada curva y persiste una caché separada; nunca interpola ni presenta puntos ausentes como observados.
+- **Histórico:** `data/raw/redata_demanda_2024.parquet` y `data/raw/openmeteo_madrid_2024.parquet` permanecen intactos. La página Demanda y el análisis histórico usan el archivo de 2024 y muestran su cobertura; nunca se usan para afirmar que la demanda es actual.
+- **Meteorología interna del modelo:** temperatura horaria a 2 m de Madrid desde [Open-Meteo Forecast API](https://open-meteo.com/en/docs). El servicio no comercial no requiere clave; requiere atribución CC BY 4.0. Es una variable de entrada del modelo, no una sección pública del dashboard.
+- **Previsión:** `models/modelo_demanda_v01.joblib`, sin reentrenar ni cambiar el contrato. El artefacto es `RandomForestRegressor` y espera, en este orden, `hora`, `dia_semana`, `mes`, `temperature_2m`, `demanda_lag_1`, `demanda_lag_24`, `demanda_lag_168` y `media_24h`. La preparación conserva las definiciones del notebook (desplazamientos 23/167 y media móvil de 24 filas). La API predice recursivamente hasta 48 horas.
 
-El objetivo general del proyecto es desarrollar y desplegar un sistema que prediga la demanda eléctrica horaria de España peninsular para las próximas 24 horas. Como objetivo secundario, el sistema también buscará predecir el precio horario del mercado diario. Finalmente, las predicciones se expondrán mediante una API REST y un dashboard interactivo.
+REData consulta una ventana de 14 días, tiene timeouts y un reintento acotado que conserva el código HTTP y el detalle final. Se persiste la última respuesta válida en `data/cache/redata_demanda_live.parquet`, separada del Parquet original de 2024. El estado distingue la conexión, la última observación, su antigüedad, la última consulta y el `last-update` de REData. El límite de frescura por defecto es 6 horas: una previsión actual exige observaciones recientes y temperaturas futuras. Si el último dato está obsoleto, el usuario puede confirmar explícitamente una simulación histórica; ésta usa temperaturas del archivo Open-Meteo Archive, conserva el origen/fecha de referencia y nunca se etiqueta como previsión actual. Si faltan horas o temperaturas, la API explica la carencia y no interpola ni inventa datos.
 
-## 👥 Miembros del equipo
+## Dashboard
 
-| Nombre | Rol | Responsabilidades clave |
-| :--- | :--- | :--- |
-| **David Lopez Solera** | 🗄️ Data Engineer | Ingesta, copia local, limpieza, alineación horaria y almacenamiento. |
-| **Kevin Tortosa Villanueva** | ⚙️ Platform / MLOps | Repositorio, tablero, Docker, CI, secretos, despliegue y reuniones. |
-| **Pablo Fernandez Fernandez** | 🧠 ML Engineer | Análisis exploratorio, baseline, modelos y evaluación. |
-| **Juan Carlos Castro Pazo** | 📊 API y Dashboard | Endpoints de FastAPI, dashboard y visualizaciones. |
+- **Resumen:** última observación real y variación respecto a la hora anterior solo cuando ambas observaciones consecutivas existen; máximo y mínimo de la previsión real de 48 horas cuando está disponible.
+- **Demanda:** exploración del Parquet histórico de 2024, con sus fechas visibles.
+- **Análisis histórico:** perfil horario, semanal, mensual, extremos y distribución de demanda. No muestra análisis meteorológico.
+- **Modelo:** selector de horizonte de 5, 12, 24 o 48 horas; la API calcula la salida seleccionada con resolución horaria, tabla por instante y resúmenes derivados de esas salidas. La simulación histórica necesita confirmación y muestra fecha de referencia.
+- **Precios:** sección pendiente; no consulta ni muestra series de precio. El modelo predice demanda en MW, no precios en €/MWh.
+- **Datos y Estado del sistema:** cobertura del archivo 2024, liveness de la API, preparación del modelo, conexión de fuentes y frescura. La evaluación técnica continúa disponible en `GET /evaluation`, fuera de la navegación pública.
 
-## 📂 Organización del repositorio
+Las curvas temporales permiten desplazamiento y zoom, tooltips unificados y botón «Restablecer vista». El histórico ofrece intervalos de 24/48 horas, 3/7 días y periodos más largos. Las horas se almacenan y comparan en UTC; la interfaz las presenta en `Europe/Madrid`, incluyendo la zona en el tooltip y las horas de cambio estacional.
 
-El repositorio, llamado `prediccion-electricidad`, seguirá la siguiente estructura de carpetas y archivos base recomendada:
+## Configuración
+
+Copia `.env.example` a `.env` si quieres cambiar los valores predeterminados. REData no requiere token; ESIOS sí necesita un token personal (`ESIOS_API_TOKEN`). Solicítalo a REE/ESIOS y añádelo solo a `.env` local o al gestor de secretos del despliegue, nunca al repositorio. Sin token, ESIOS se marca como no configurado y se conserva una caché anterior si existe.
 
 ```text
-📦 prediccion-electricidad
- ┣ 📂 docs/                 # Documentación (NF1, cronograma, memoria, diagramas)
- ┣ 📂 src/                  # Código fuente principal
- ┃ ┣ 📂 ingestion/          # Conectores REData, ESIOS, Open-Meteo
- ┃ ┣ 📂 features/           # Ingeniería de características
- ┃ ┣ 📂 models/             # Modelos de Machine Learning
- ┃ ┣ 📂 api/                # FastAPI
- ┃ ┗ 📂 dashboard/          # Interfaz de usuario (Streamlit)
- ┣ 📂 data/                 # Histórico de datos (raw y processed) - No se versionará
- ┣ 📂 notebooks/            # Análisis Exploratorio de Datos (EDA) y experimentos
- ┣ 📂 tests/                # Directorio destinado a las pruebas del sistema
- ┣ 📂 .github/workflows/    # Configuración para la integración continua (CI)
- ┣ 📜 README.md             # Este archivo principal de descripción del proyecto
- ┣ 📜 .gitignore            # Archivo para omitir subida de datos pesados/secretos
- ┣ 📜 docker-compose.yml    # Archivo base para levantar el entorno (API y dashboard)
- ┗ 📜 .env.example          # Plantilla para variables de entorno y claves privadas
+MAX_DEMAND_AGE_HOURS=6
+DEMAND_LOOKBACK_DAYS=14
+API_TIMEOUT_SECONDS=35
+LIVE_DEMAND_CACHE_PATH=/cache/redata_demanda_live.parquet
+```
 
-## Preview provisional: API de demanda y dashboard
-
-Esta integración es una **preview**, una versión previa y provisional para revisión y aprobación. Mantiene el artefacto entrenado `models/modelo_demanda_v01.joblib`; no entrena ni sustituye el modelo. El estimador predice una hora por paso. La API itera hasta 48 horas, usando las predicciones anteriores como lags y temperatura pronosticada por Open-Meteo.
-
-El modelo de notebook usa horas UTC, `value` como demanda (se expone como MW, según los datos REData) y `temperature_2m`. Para reproducir exactamente el entrenamiento, los lags son los desplazamientos de 23 y 167 filas, y `media_24h` incluye la fila actual. Un hueco, duplicado o valor no finito impide predecir.
-
-La dependencia de Scikit-learn se fija en `1.9.0`, la versión registrada por el artefacto guardado.
-
-### Arranque local
-
-Instala dependencias en el entorno Python activo:
+Para desarrollo local, instala las dependencias y ejecuta FastAPI:
 
 ```powershell
 python -m pip install -r src/api/requirements.txt
 python -m pip install -r src/dashboard/requirements.txt
-```
-
-La ruta predeterminada del artefacto es `/models/modelo_demanda_v01.joblib` y la de los datos `/data/raw`, adecuadas para contenedores. En local, configura `MODEL_PATH` y `DATA_DIR` a las rutas absolutas del checkout; por ejemplo:
-
-```powershell
 $env:MODEL_PATH = (Resolve-Path .\models\modelo_demanda_v01.joblib).Path
 $env:DATA_DIR = (Resolve-Path .\data\raw).Path
 uvicorn main:app --app-dir src/api --host 127.0.0.1 --port 8000
 ```
 
-En otra terminal, configura `API_BASE_URL=http://localhost:8000` y ejecuta `streamlit run src/dashboard/app.py`. La UI usa `API_BASE_URL` para consultar FastAPI; en Compose se configura `http://api:8000` automáticamente. La API consulta REData (demanda reciente) y Open-Meteo (temperatura; [documentación de Forecast API](https://open-meteo.com/en/docs)) sin claves. Se puede ajustar `MAX_DEMAND_AGE_HOURS` (predeterminado 6) y `DEMAND_LOOKBACK_DAYS` (predeterminado 10). Las peticiones externas tienen timeout y, si fallan, no se simulan datos.
+En otra terminal configura `$env:API_BASE_URL = "http://localhost:8000"` y ejecuta `streamlit run src/dashboard/app.py`. Dentro de Compose el dashboard utiliza `http://api:8000`.
 
-### Docker Compose
+## Docker Compose
 
-El modelo y `data/raw` se montan en solo lectura desde el checkout. Confirma que el modelo y los Parquet estén en las rutas predeterminadas y ejecuta:
+Los montajes de `models/` y `data/raw/` son de solo lectura. Arranca y prueba localmente:
 
 ```powershell
+docker compose config --quiet
 docker compose up --build
 ```
 
-Dashboard: <http://localhost:8501>. API y Swagger: <http://localhost:8000/docs>. Compose solo pasa las variables de configuración indicadas; no inyecta `.env` ni secretos.
+Dashboard: <http://localhost:8501>. API: <http://localhost:8000/docs>. `/health` es liveness y no depende de fuentes externas; `/ready` distingue la capacidad de simulación histórica de la disponibilidad de previsión actual. Compose monta el caché REData en `data/cache/`, separado y escribible, mientras conserva `data/raw/` como solo lectura.
 
-### Endpoints
+## API
 
-- `GET /health`: estado del proceso, modelo, demanda más reciente y disponibilidad de futuro.
-- `GET /model/info`: tipo y variables verificadas del modelo.
-- `GET /history?limit=168`: observaciones REData disponibles; admite también `start` y `end` en ISO 8601.
-- `POST /predict`: cuerpo `{"horizon_hours":24}`; rango permitido 1–48.
-- `GET /evaluation`: métricas MAE/RMSE del test cronológico de 2024 frente al baseline.
-- `GET /prices?limit=168`: observaciones históricas ESIOS locales, si existe `data/raw/esios_precio_2023_2025.parquet` con columnas `timestamp` y `price_mwh`; si falta, responde 503.
+- `GET /health`: liveness de FastAPI y estado de carga del artefacto.
+- `GET /ready`: informa conexión de REData/Open-Meteo, última observación, frescura, entradas históricas para simulación y disponibilidad de previsión actual. Devuelve 503 cuando no puede producirse una previsión actual.
+- `GET /model/info`: tipo de modelo y contrato validado de variables.
+- `GET /history?limit=168`: observaciones de demanda con procedencia; admite `start` y `end` ISO 8601.
+- `GET /curves?hours=168`: indicadores ESIOS 1293 y 544, separados y con metadatos de resolución, frescura y conexión; requiere `ESIOS_API_TOKEN`.
+- `GET /comparison?hours=48`: comparación REData/ESIOS únicamente en marcas temporales UTC exactamente coincidentes.
+- `POST /predict`: cuerpo `{"horizon_hours":48}`; horizontes permitidos 5, 12, 24 o 48, en horas. Para datos obsoletos se requiere además `{"allow_stale_simulation":true}` y las temperaturas históricas exactas deben estar disponibles.
+- `GET /evaluation`: evaluación retrospectiva técnica, no expuesta en las páginas públicas.
 
-La previsión requiere hasta 168 observaciones horarias consecutivas, demanda reciente (máximo 6 horas por defecto) y temperatura alineada. Con solo los Parquet de 2024, en 2026 el endpoint `/predict` devuelve 503 con la fecha real del último dato disponible; esa salida no se rotula como previsión actual. El dashboard presenta una previsión ejecutiva, ranking de cinco horas punta, extremos diarios, perfil horario y mapa de calor cuando el horizonte cubre más de un día. Compara con observaciones REData del día y semana anteriores y permite elegir otro día histórico; las comparaciones horarias se documentan como UTC o Europe/Madrid según corresponda.
+## Pruebas
 
-La evaluación añade backtesting recursivo de 1, 6, 12, 24 y 48 horas, baseline de persistencia y MAE para observaciones del 10 % superior de demanda. Para esos horizontes, la temperatura futura se toma de observaciones históricas a posteriori y no incorpora el error de una previsión meteorológica; no equivale al rendimiento operativo. Los precios ESIOS son una serie histórica secundaria, nunca una variable predicha por este modelo. Actualmente hace falta generar el Parquet con `tests/probar_esios.py` (requiere `ESIOS_TOKEN`); mientras no exista el archivo, API y dashboard muestran que el histórico no está disponible.
+```powershell
+python -m unittest discover -s src/api/tests
+python -m unittest discover -s src/dashboard/tests
+flake8 src/ --max-line-length=100
+docker compose config --quiet
+docker compose up --build
+```
 
-### Pruebas y revisión
-
-Ejecuta `python -m unittest discover -s src/api/tests`, `python -m unittest discover -s src/dashboard/tests` y `flake8 src/ --max-line-length=100`. El smoke test del modelo requiere las dependencias de `src/api/requirements.txt` y el artefacto original. Las cifras de `/evaluation` se calculan al consultar ese artefacto y los datos históricos locales; no están hardcodeadas.
+Las pruebas de API que utilizan el artefacto requieren el modelo local. La validación de la conexión real requiere conectividad a Internet; REData no requiere credenciales. Si la fuente no está disponible, el dashboard muestra HTTP/error y la fecha de caché más reciente sin presentar 2024 como actual.

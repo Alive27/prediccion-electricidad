@@ -14,6 +14,7 @@ from streamlit.testing.v1 import AppTest
 DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DIRECTORY))
 
+from components.charts import base_figure  # noqa: E402
 from components.layout import PAGES  # noqa: E402
 from components.tables import csv_bytes  # noqa: E402
 from services.analysis import select_dates, select_period  # noqa: E402
@@ -137,6 +138,25 @@ class RealDataTests(unittest.TestCase):
 
 
 class ViewTests(unittest.TestCase):
+    def test_historical_range_options_select_exact_rolling_windows(self):
+        frame = pd.DataFrame({"timestamp": pd.date_range(
+            "2026-01-01", periods=24 * 8, freq="h", tz="Europe/Madrid"),
+            "value": range(24 * 8)})
+        for label, expected in (("24 horas", 24), ("48 horas", 48),
+                                ("3 días", 72), ("7 días", 168)):
+            with self.subTest(label=label):
+                selected = select_period(frame, label)
+                self.assertEqual(len(selected), expected)
+                self.assertEqual(selected.timestamp.max(), frame.timestamp.max())
+
+    def test_public_navigation_is_demand_first_and_charts_are_locked(self):
+        self.assertEqual(PAGES, ["Resumen", "Demanda", "Análisis histórico", "Modelo",
+                                 "Precios", "Datos", "Estado del sistema"])
+        figure = base_figure("Demanda · MW")
+        self.assertFalse(figure.layout.dragmode)
+        self.assertTrue(figure.layout.xaxis.fixedrange)
+        self.assertTrue(figure.layout.yaxis.fixedrange)
+
     def test_all_views_render_with_real_data(self):
         app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
         self.assertFalse(app.exception)
@@ -157,7 +177,7 @@ class ViewTests(unittest.TestCase):
 
     def test_missing_datasets_do_not_break_any_view(self):
         real = {kind: load_local(kind) for kind in FILENAMES}
-        for absent_kinds in (("demand",), ("weather",), ("demand", "weather")):
+        for absent_kinds in (("demand",), ("demand", "weather")):
             replacement = {kind: Dataset(kind) if kind in absent_kinds else dataset
                            for kind, dataset in real.items()}
             with patch("services.data_loader.load_local", side_effect=replacement.__getitem__):
@@ -168,9 +188,9 @@ class ViewTests(unittest.TestCase):
                         app.sidebar.button(key=f"nav_{PAGES.index(page)}").click().run()
                         self.assertFalse(app.exception)
                         self.assertEqual(len(app.get("file_uploader")),
-                                         len(absent_kinds) if page == "Datos" else 0)
+                                         int("demand" in absent_kinds) if page == "Datos" else 0)
 
-    def test_stale_demand_disables_future_prediction(self):
+    def test_stale_demand_requires_explicit_historical_simulation(self):
         status = {"api": True, "model_loaded": True, "data_available": True,
                   "last_demand_utc": "2024-12-31T22:00:00+00:00",
                   "future_forecast_available": False,
@@ -183,18 +203,129 @@ class ViewTests(unittest.TestCase):
                       side_effect=requests.ConnectionError):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
             self.assertEqual(len(app.get("file_uploader")), 0)
-            app.sidebar.button(key="nav_4").click().run()
+            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
             generate = next(button for button in app.button
-                            if button.label == "Generar previsión")
+                            if button.label == "Generar simulación histórica 48 h")
             self.assertTrue(generate.disabled)
             self.assertEqual(len(app.get("plotly_chart")), 0)
+
+    def test_confirmed_historical_simulation_is_sent_as_simulation(self):
+        origin = pd.Timestamp("2024-12-31T22:00:00Z")
+        generated = pd.Timestamp.now(tz="UTC")
+        forecast = {
+            "model": "RandomForestRegressor", "horizon_hours": 48,
+            "forecast_origin_utc": origin.isoformat(),
+            "simulation_reference_utc": origin.isoformat(),
+            "generated_at_utc": generated.isoformat(),
+            "prediction_mode": "historical_simulation",
+            "predictions": [{"timestamp_utc": (origin + pd.Timedelta(hours=hour)).isoformat(),
+                             "demand_mw": 31_000.0 + hour}
+                            for hour in range(1, 49)],
+        }
+        status = {"api": True, "model_loaded": True, "model_schema_valid": True,
+                  "data_available": True, "last_demand_utc": origin.isoformat(),
+                  "last_demand_mw": 31_000.0, "last_demand_age_hours": 16000,
+                  "demand_fresh": False, "historical_simulation_available": True,
+                  "future_forecast_available": False,
+                  "reason": "Dato histórico obsoleto.", "source_notice": "REData no disponible."}
+        model = {"model_type": "RandomForestRegressor",
+                 "artifact_version": "modelo_demanda_v01"}
+        with patch("services.api_client.cached_status", return_value=status), \
+                patch("services.api_client.cached_model_info", return_value=model), \
+                patch("services.api_client.post", return_value=forecast) as post, \
+                patch("services.api_client.cached_history", return_value={"records": []}), \
+                patch("services.api_client.cached_history_between", return_value={"records": []}):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
+            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
+            self.assertTrue(app.button(key="prediction_generate").disabled)
+            app.checkbox(key="confirm_historical_simulation").check().run()
+            app.button(key="prediction_generate").click().run()
+        self.assertFalse(app.exception)
+        self.assertTrue(post.called)
+        self.assertTrue(post.call_args.args[1]["allow_stale_simulation"])
+        self.assertTrue(any("SIMULACIÓN HISTÓRICA" in item.value for item in app.warning))
+
+    def test_model_page_uses_api_forecast_and_exposes_reset_controls(self):
+        origin = pd.Timestamp.now(tz="UTC").floor("h")
+        generated = pd.Timestamp.now(tz="UTC")
+        predictions = [{"timestamp_utc": (origin + pd.Timedelta(hours=hour)).isoformat(),
+                        "demand_mw": 31_000.0 + hour * 10}
+                       for hour in range(1, 49)]
+        forecast = {"model": "RandomForestRegressor", "horizon_hours": 48,
+                    "forecast_origin_utc": origin.isoformat(),
+                    "generated_at_utc": generated.isoformat(), "predictions": predictions}
+        status = {"api": True, "model_loaded": True, "model_schema_valid": True,
+                  "data_available": True, "last_demand_utc": origin.isoformat(),
+                  "last_demand_mw": 31_000.0, "demand_delta_mw": 100.0,
+                  "demand_fresh": True, "demand_source_status": "connected",
+                  "future_forecast_available": True, "source_notice": None}
+        model = {"model_type": "RandomForestRegressor",
+                 "artifact_version": "modelo_demanda_v01"}
+        history = {"records": [{"timestamp_utc": origin.isoformat(),
+                                "demand_mw": 31_000.0}]}
+        with patch("services.api_client.cached_status", return_value=status), \
+                patch("services.api_client.cached_model_info", return_value=model), \
+                patch("services.api_client.post", return_value=forecast), \
+                patch("services.api_client.cached_history", return_value=history), \
+                patch("services.api_client.cached_history_between", return_value={"records": []}):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
+            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.get("plotly_chart")), 2)
+        self.assertTrue(app.button(key="reset_view_model_forecast_timeline"))
+        self.assertTrue(app.button(key="reset_view_model_hourly_profile"))
+        labels = [item.label for item in app.metric]
+        self.assertFalse(any("MAE" in label or "RMSE" in label for label in labels))
+
+    def test_selected_prediction_horizon_is_sent_to_the_api(self):
+        origin = pd.Timestamp.now(tz="UTC").floor("h")
+        generated = pd.Timestamp.now(tz="UTC")
+        prediction = {"model": "RandomForestRegressor", "horizon_hours": 5,
+                      "forecast_origin_utc": origin.isoformat(),
+                      "generated_at_utc": generated.isoformat(),
+                      "prediction_mode": "current_forecast",
+                      "predictions": [
+                          {
+                              "timestamp_utc": (
+                                  origin + pd.Timedelta(hours=hour)).isoformat(),
+                              "demand_mw": 31_000.0 + hour,
+                          }
+                          for hour in range(1, 6)
+                      ]}
+        status = {"api": True, "model_loaded": True, "model_schema_valid": True,
+                  "data_available": True, "last_demand_utc": origin.isoformat(),
+                  "demand_fresh": True, "future_forecast_available": True}
+        model = {"model_type": "RandomForestRegressor",
+                 "artifact_version": "modelo_demanda_v01"}
+        with patch("services.api_client.cached_status", return_value=status), \
+                patch("services.api_client.cached_model_info", return_value=model), \
+                patch("services.api_client.cached_curves", return_value={"curves": {}}), \
+                patch("services.api_client.cached_history", return_value={"records": []}), \
+                patch("services.api_client.cached_history_between", return_value={"records": []}), \
+                patch("services.api_client.post", return_value=prediction) as post:
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
+            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
+            app.select_slider(key="prediction_horizon").set_value(5).run()
+            app.button(key="prediction_generate").click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(post.call_args.args[1]["horizon_hours"], 5)
+        self.assertEqual(len(app.get("plotly_chart")), 2)
 
     def test_manual_source_survives_navigation_and_refresh(self):
         raw_path = DIRECTORY.parents[1] / "data" / "raw" / FILENAMES["demand"]
         content = raw_path.read_bytes()
         weather = load_local("weather")
         replacement = {"demand": Dataset("demand"), "weather": weather}
-        with patch("services.data_loader.load_local", side_effect=replacement.__getitem__):
+        offline_status = {
+            "api": True, "model_loaded": True, "data_available": True,
+            "last_demand_utc": "2024-12-31T22:00:00+00:00", "demand_fresh": False,
+            "historical_simulation_available": False,
+            "future_forecast_available": False,
+            "reason": "REData no disponible en esta prueba.",
+        }
+        with patch("services.data_loader.load_local", side_effect=replacement.__getitem__), \
+                patch("services.api_client.cached_status", return_value=offline_status), \
+                patch("services.api_client.refresh_sources", return_value=offline_status):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
             app.sidebar.button(key="nav_5").click().run()
             self.assertEqual(len(app.file_uploader), 1)

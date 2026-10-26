@@ -3,8 +3,9 @@
 import streamlit as st
 
 from components.layout import apply_theme, sidebar
+from services import api_client
 from services.data_loader import load_local, load_upload, refresh
-from views import data, demand, historical, overview, prediction, system, weather
+from views import data, demand, historical, overview, prediction, prices, system
 
 
 st.set_page_config(
@@ -15,9 +16,18 @@ page, theme, reload_requested = sidebar()
 apply_theme(theme)
 if reload_requested:
     refresh()
+    api_client.cached_status.clear()
+    api_client.cached_history.clear()
+    api_client.cached_history_between.clear()
+    try:
+        api_client.refresh_sources()
+    except Exception as error:
+        st.session_state["source_refresh_error"] = type(error).__name__
+    else:
+        st.session_state.pop("source_refresh_error", None)
 
 with st.spinner("Cargando datos históricos…"):
-    datasets = {kind: load_local(kind) for kind in ("demand", "weather")}
+    datasets = {"demand": load_local("demand")}
 for kind, dataset in datasets.items():
     content = st.session_state.get(f"manual_{kind}")
     if not dataset.available and content is not None:
@@ -26,9 +36,9 @@ for kind, dataset in datasets.items():
 views = {
     "Resumen": overview.render,
     "Demanda": demand.render,
-    "Meteorología": weather.render,
     "Análisis histórico": historical.render,
-    "Predicción": prediction.render,
+    "Modelo": prediction.render,
+    "Precios": prices.render,
     "Datos": data.render,
     "Estado del sistema": system.render,
 }

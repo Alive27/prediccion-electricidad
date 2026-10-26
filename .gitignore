@@ -6,6 +6,7 @@
 # Datos (no se versionan, según el documento de viabilidad)
 data/raw/*
 data/processed/*
+data/cache/*
 !data/.gitkeep
 
 # Python

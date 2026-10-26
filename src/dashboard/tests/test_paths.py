@@ -78,7 +78,7 @@ class ContainerPathsTests(unittest.TestCase):
             self.assertEqual(len(app.get("file_uploader")), 0)
             app.sidebar.button(key="nav_5").click().run()
         self.assertFalse(app.exception)
-        self.assertEqual(len(app.get("file_uploader")), 2)
+        self.assertEqual(len(app.get("file_uploader")), 1)
 
 
 if __name__ == "__main__":
