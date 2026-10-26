@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -61,6 +62,18 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(evaluation.status_code, 200)
         self.assertEqual(evaluation.json()["test_records"], 1723)
         self.assertAlmostEqual(evaluation.json()["mae_mw"], 500.2053, places=2)
+        horizons = evaluation.json()["horizon_metrics"]
+        self.assertEqual([item["horizon_hours"] for item in horizons], [1, 6, 12, 24, 48])
+        self.assertTrue(all("peak_mae_mw" in item for item in horizons))
+
+    def test_prices_are_explicitly_unavailable_without_esios_file(self):
+        original = self.service.data_dir
+        with tempfile.TemporaryDirectory() as directory:
+            self.service.data_dir = Path(directory)
+            response = self.client.get("/prices")
+        self.service.data_dir = original
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("no predice precios", response.json()["detail"])
 
 
 if __name__ == "__main__":

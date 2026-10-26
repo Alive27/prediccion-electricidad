@@ -101,6 +101,8 @@ class DemandService:
         self._weather_cache = None
         self._demand_cached_at = None
         self._weather_cached_at = None
+        self._evaluation_cache = None
+        self._evaluation_cached_at = None
 
     def _cache_is_fresh(self, timestamp) -> bool:
         return timestamp is not None and datetime.now(UTC) - timestamp < timedelta(minutes=5)
@@ -110,6 +112,39 @@ class DemandService:
 
     def local_weather(self) -> pd.DataFrame:
         return read_local(self.data_dir / "openmeteo_madrid_2024.parquet", "weather")
+
+    def price_history(self, limit: int, start: str | None, end: str | None):
+        path = self.data_dir / "esios_precio_2023_2025.parquet"
+        if not path.is_file():
+            raise DataUnavailable(
+                "No existe el histórico local de precios ESIOS (esios_precio_2023_2025.parquet). "
+                "El dashboard no dispone de precios y el modelo no predice precios."
+            )
+        try:
+            frame = pd.read_parquet(path)
+        except (OSError, ValueError) as error:
+            raise DataUnavailable(
+                "No se pudo leer el Parquet histórico de precios ESIOS.") from error
+        if not {"timestamp", "price_mwh"}.issubset(frame.columns):
+            raise DataUnavailable("El Parquet de ESIOS debe contener timestamp y price_mwh.")
+        frame = pd.DataFrame({
+            "timestamp_utc": pd.to_datetime(frame.timestamp, utc=True),
+            "price_eur_mwh": pd.to_numeric(frame.price_mwh, errors="coerce"),
+        }).dropna().sort_values("timestamp_utc")
+        for column, bound_value, operator in (
+                ("timestamp_utc", start, "ge"), ("timestamp_utc", end, "le")):
+            if bound_value:
+                bound = pd.Timestamp(bound_value)
+                bound = bound.tz_localize("UTC") if bound.tzinfo is None else (
+                    bound.tz_convert("UTC"))
+                frame = frame.loc[getattr(frame[column], operator)(bound)]
+        frame = frame.tail(limit)
+        return {"unit": "€/MWh", "source": "ESIOS · archivo histórico local",
+                "kind": "historical_observations",
+                "records": [{"timestamp_utc": stamp.isoformat(),
+                             "price_eur_mwh": float(value)}
+                            for stamp, value in zip(frame.timestamp_utc,
+                                                    frame.price_eur_mwh)]}
 
     def demand_data(self) -> pd.DataFrame:
         if self._cache_is_fresh(self._demand_cached_at):
@@ -264,6 +299,9 @@ class DemandService:
                 "generated_at_utc": datetime.now(UTC).isoformat(), "predictions": future}
 
     def evaluation(self):
+        if self._evaluation_cached_at is not None and datetime.now(UTC) - (
+                self._evaluation_cached_at) < timedelta(hours=1):
+            return self._evaluation_cache
         demand = self.local_demand()
         weather = self.local_weather()
         if demand.empty or weather.empty:
@@ -284,11 +322,84 @@ class DemandService:
         predicted = np.asarray(self.model.predict(test[FEATURES]), dtype=float)
         actual = test.objetivo.to_numpy(dtype=float)
         baseline = test.demanda_lag_1.to_numpy(dtype=float)
-        return {"type": "evaluación retrospectiva de un paso",
-                "train_fraction": 0.8, "test_records": len(test),
-                "test_start_utc": test.timestamp_utc.iloc[0].isoformat(),
-                "mae_mw": float(np.mean(np.abs(actual - predicted))),
-                "rmse_mw": float(np.sqrt(np.mean((actual - predicted) ** 2))),
-                "baseline_mae_mw": float(np.mean(np.abs(actual - baseline))),
-                "baseline_rmse_mw": float(np.sqrt(np.mean((actual - baseline) ** 2))),
-                "note": "Histórico; entradas observadas en cada paso. No mide previsión actual."}
+        horizons = self._evaluate_horizons(joined, split)
+        self._evaluation_cache = {
+            "type": "evaluación retrospectiva temporal",
+            "train_fraction": 0.8, "test_records": len(test),
+            "test_start_utc": test.timestamp_utc.iloc[0].isoformat(),
+            "mae_mw": float(np.mean(np.abs(actual - predicted))),
+            "rmse_mw": float(np.sqrt(np.mean((actual - predicted) ** 2))),
+            "baseline_mae_mw": float(np.mean(np.abs(actual - baseline))),
+            "baseline_rmse_mw": float(np.sqrt(np.mean((actual - baseline) ** 2))),
+            "horizon_metrics": horizons,
+            "peak_threshold_mw": float(np.quantile(actual, 0.9)),
+            "note": "Los lags usan solo demanda observada hasta el origen y después "
+                    "predicciones recursivas. La temperatura futura es observada a "
+                    "posteriori; estas métricas no incluyen el error meteorológico ni "
+                    "representan una previsión operativa actual.",
+        }
+        self._evaluation_cached_at = datetime.now(UTC)
+        return self._evaluation_cache
+
+    def _evaluate_horizons(self, joined: pd.DataFrame, split: int):
+        horizons = (1, 6, 12, 24, 48)
+        maximum = max(horizons)
+        # Daily-spaced origins keep the recursive backtest representative while
+        # bounding the cost of 48 sequential RandomForest predictions per origin.
+        stride = 48
+        temperatures = dict(zip(joined.timestamp_utc, joined.temperature_2m))
+        threshold = float(np.quantile(joined.objetivo.iloc[split:].dropna(), 0.9))
+        errors = {hour: {"actual": [], "predicted": [], "baseline": [], "peak": []}
+                  for hour in horizons}
+        for origin_index in range(split, len(joined) - maximum, stride):
+            first = origin_index - 167
+            times = pd.DatetimeIndex(joined.timestamp_utc.iloc[first:origin_index + 1])
+            values = joined.value.iloc[first:origin_index + 1].astype(float).tolist()
+            meteo = joined.temperature_2m.iloc[first:origin_index + 1].astype(float).tolist()
+            origin_value = values[-1]
+            predictions = []
+            for _ in range(maximum):
+                features = prepare_features(pd.Series(values[-168:]),
+                                            pd.DatetimeIndex(times[-168:]),
+                                            pd.Series(meteo[-168:]))
+                result = float(np.asarray(self.model.predict(features)).reshape(-1)[0])
+                target_time = times[-1] + pd.Timedelta(hours=1)
+                target_temperature = temperatures.get(target_time)
+                if target_temperature is None or not np.isfinite(result):
+                    break
+                predictions.append(result)
+                times = times.append(pd.DatetimeIndex([target_time]))
+                values.append(result)
+                meteo.append(float(target_temperature))
+            if len(predictions) < maximum:
+                continue
+            for hour in horizons:
+                observed = float(joined.value.iloc[origin_index + hour])
+                bucket = errors[hour]
+                bucket["actual"].append(observed)
+                bucket["predicted"].append(predictions[hour - 1])
+                bucket["baseline"].append(origin_value)
+                if observed >= threshold:
+                    bucket["peak"].append((observed, predictions[hour - 1]))
+
+        result = []
+        for hour in horizons:
+            bucket = errors[hour]
+            actual_values = np.asarray(bucket["actual"], dtype=float)
+            predicted_values = np.asarray(bucket["predicted"], dtype=float)
+            baseline_values = np.asarray(bucket["baseline"], dtype=float)
+            if not len(actual_values):
+                continue
+            peak_pairs = np.asarray(bucket["peak"], dtype=float).reshape(-1, 2)
+            result.append({
+                "horizon_hours": hour, "origins": int(len(actual_values)),
+                "mae_mw": float(np.mean(np.abs(actual_values - predicted_values))),
+                "rmse_mw": float(np.sqrt(np.mean((actual_values - predicted_values) ** 2))),
+                "baseline_mae_mw": float(np.mean(np.abs(actual_values - baseline_values))),
+                "baseline_rmse_mw": float(np.sqrt(np.mean(
+                    (actual_values - baseline_values) ** 2))),
+                "peak_records": int(len(peak_pairs)),
+                "peak_mae_mw": (float(np.mean(np.abs(peak_pairs[:, 0] - peak_pairs[:, 1])))
+                                if len(peak_pairs) else None),
+            })
+        return result

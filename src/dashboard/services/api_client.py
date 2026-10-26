@@ -39,6 +39,16 @@ def cached_history(limit: int = 168) -> dict:
     return get("/history", {"limit": limit})
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_history_between(start_utc: str, end_utc: str) -> dict:
+    return get("/history", {"limit": 8784, "start": start_utc, "end": end_utc})
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def cached_evaluation() -> dict:
     return get("/evaluation")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_prices(limit: int = 168) -> dict:
+    return get("/prices", {"limit": limit})

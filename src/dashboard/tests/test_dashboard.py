@@ -150,6 +150,7 @@ class ViewTests(unittest.TestCase):
         for theme in ("Claro", "Oscuro", "Sistema"):
             app.sidebar.selectbox[0].set_value(theme).run()
             self.assertFalse(app.exception)
+        app.sidebar.button(key=f"nav_{PAGES.index('Demanda')}").click().run()
         for period in ("24 horas", "7 días", "30 días", "Todo el periodo", "Personalizado"):
             app.main.segmented_control[0].set_value(period).run()
             self.assertFalse(app.exception)
@@ -212,7 +213,9 @@ class ViewTests(unittest.TestCase):
             app.sidebar.button(key="refresh_data").click().run()
             self.assertFalse(app.exception)
             self.assertEqual(app.session_state["manual_demand"], content)
-            self.assertEqual(len(app.get("plotly_chart")), 3)
+            self.assertEqual(len(app.get("plotly_chart")), 0)
+            app.sidebar.button(key=f"nav_{PAGES.index('Demanda')}").click().run()
+            self.assertGreater(len(app.get("plotly_chart")), 0)
             app.sidebar.button(key="nav_5").click().run()
             app.button(key="discard_demand").click().run()
             self.assertFalse(app.exception)

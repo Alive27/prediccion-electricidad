@@ -91,3 +91,12 @@ def evaluation():
         return get_service().evaluation()
     except DataUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/prices")
+def prices(limit: int = Query(default=168, ge=1, le=8784),
+           start: datetime | None = None, end: datetime | None = None):
+    try:
+        return get_service().price_history(limit, start, end)
+    except DataUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error

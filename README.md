@@ -87,8 +87,11 @@ Dashboard: <http://localhost:8501>. API y Swagger: <http://localhost:8000/docs>.
 - `GET /history?limit=168`: observaciones REData disponibles; admite también `start` y `end` en ISO 8601.
 - `POST /predict`: cuerpo `{"horizon_hours":24}`; rango permitido 1–48.
 - `GET /evaluation`: métricas MAE/RMSE del test cronológico de 2024 frente al baseline.
+- `GET /prices?limit=168`: observaciones históricas ESIOS locales, si existe `data/raw/esios_precio_2023_2025.parquet` con columnas `timestamp` y `price_mwh`; si falta, responde 503.
 
-La previsión requiere hasta 168 observaciones horarias consecutivas, demanda reciente (máximo 6 horas por defecto) y temperatura alineada. Con solo los Parquet de 2024, en 2026 el endpoint `/predict` devuelve 503 con la fecha real del último dato disponible; esa salida no se rotula como previsión actual. La evaluación es histórica, de un paso con datos observados y no representa el rendimiento de un horizonte futuro de 24 horas.
+La previsión requiere hasta 168 observaciones horarias consecutivas, demanda reciente (máximo 6 horas por defecto) y temperatura alineada. Con solo los Parquet de 2024, en 2026 el endpoint `/predict` devuelve 503 con la fecha real del último dato disponible; esa salida no se rotula como previsión actual. El dashboard presenta una previsión ejecutiva, ranking de cinco horas punta, extremos diarios, perfil horario y mapa de calor cuando el horizonte cubre más de un día. Compara con observaciones REData del día y semana anteriores y permite elegir otro día histórico; las comparaciones horarias se documentan como UTC o Europe/Madrid según corresponda.
+
+La evaluación añade backtesting recursivo de 1, 6, 12, 24 y 48 horas, baseline de persistencia y MAE para observaciones del 10 % superior de demanda. Para esos horizontes, la temperatura futura se toma de observaciones históricas a posteriori y no incorpora el error de una previsión meteorológica; no equivale al rendimiento operativo. Los precios ESIOS son una serie histórica secundaria, nunca una variable predicha por este modelo. Actualmente hace falta generar el Parquet con `tests/probar_esios.py` (requiere `ESIOS_TOKEN`); mientras no exista el archivo, API y dashboard muestran que el histórico no está disponible.
 
 ### Pruebas y revisión
 
