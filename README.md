@@ -42,3 +42,57 @@ El repositorio, llamado `prediccion-electricidad`, seguirá la siguiente estruct
  ┣ 📜 .gitignore            # Archivo para omitir subida de datos pesados/secretos
  ┣ 📜 docker-compose.yml    # Archivo base para levantar el entorno (API y dashboard)
  ┗ 📜 .env.example          # Plantilla para variables de entorno y claves privadas
+
+## Preview provisional: API de demanda y dashboard
+
+Esta integración es una **preview**, una versión previa y provisional para revisión y aprobación. Mantiene el artefacto entrenado `models/modelo_demanda_v01.joblib`; no entrena ni sustituye el modelo. El estimador predice una hora por paso. La API itera hasta 48 horas, usando las predicciones anteriores como lags y temperatura pronosticada por Open-Meteo.
+
+El modelo de notebook usa horas UTC, `value` como demanda (se expone como MW, según los datos REData) y `temperature_2m`. Para reproducir exactamente el entrenamiento, los lags son los desplazamientos de 23 y 167 filas, y `media_24h` incluye la fila actual. Un hueco, duplicado o valor no finito impide predecir.
+
+La dependencia de Scikit-learn se fija en `1.9.0`, la versión registrada por el artefacto guardado.
+
+### Arranque local
+
+Instala dependencias en el entorno Python activo:
+
+```powershell
+python -m pip install -r src/api/requirements.txt
+python -m pip install -r src/dashboard/requirements.txt
+```
+
+La ruta predeterminada del artefacto es `/models/modelo_demanda_v01.joblib` y la de los datos `/data/raw`, adecuadas para contenedores. En local, configura `MODEL_PATH` y `DATA_DIR` a las rutas absolutas del checkout; por ejemplo:
+
+```powershell
+$env:MODEL_PATH = (Resolve-Path .\models\modelo_demanda_v01.joblib).Path
+$env:DATA_DIR = (Resolve-Path .\data\raw).Path
+uvicorn main:app --app-dir src/api --host 127.0.0.1 --port 8000
+```
+
+En otra terminal, configura `API_BASE_URL=http://localhost:8000` y ejecuta `streamlit run src/dashboard/app.py`. La UI usa `API_BASE_URL` para consultar FastAPI; en Compose se configura `http://api:8000` automáticamente. La API consulta REData (demanda reciente) y Open-Meteo (temperatura; [documentación de Forecast API](https://open-meteo.com/en/docs)) sin claves. Se puede ajustar `MAX_DEMAND_AGE_HOURS` (predeterminado 6) y `DEMAND_LOOKBACK_DAYS` (predeterminado 10). Las peticiones externas tienen timeout y, si fallan, no se simulan datos.
+
+### Docker Compose
+
+El modelo y `data/raw` se montan en solo lectura desde el checkout. Confirma que el modelo y los Parquet estén en las rutas predeterminadas y ejecuta:
+
+```powershell
+docker compose up --build
+```
+
+Dashboard: <http://localhost:8501>. API y Swagger: <http://localhost:8000/docs>. Compose solo pasa las variables de configuración indicadas; no inyecta `.env` ni secretos.
+
+### Endpoints
+
+- `GET /health`: estado del proceso, modelo, demanda más reciente y disponibilidad de futuro.
+- `GET /model/info`: tipo y variables verificadas del modelo.
+- `GET /history?limit=168`: observaciones REData disponibles; admite también `start` y `end` en ISO 8601.
+- `POST /predict`: cuerpo `{"horizon_hours":24}`; rango permitido 1–48.
+- `GET /evaluation`: métricas MAE/RMSE del test cronológico de 2024 frente al baseline.
+- `GET /prices?limit=168`: observaciones históricas ESIOS locales, si existe `data/raw/esios_precio_2023_2025.parquet` con columnas `timestamp` y `price_mwh`; si falta, responde 503.
+
+La previsión requiere hasta 168 observaciones horarias consecutivas, demanda reciente (máximo 6 horas por defecto) y temperatura alineada. Con solo los Parquet de 2024, en 2026 el endpoint `/predict` devuelve 503 con la fecha real del último dato disponible; esa salida no se rotula como previsión actual. El dashboard presenta una previsión ejecutiva, ranking de cinco horas punta, extremos diarios, perfil horario y mapa de calor cuando el horizonte cubre más de un día. Compara con observaciones REData del día y semana anteriores y permite elegir otro día histórico; las comparaciones horarias se documentan como UTC o Europe/Madrid según corresponda.
+
+La evaluación añade backtesting recursivo de 1, 6, 12, 24 y 48 horas, baseline de persistencia y MAE para observaciones del 10 % superior de demanda. Para esos horizontes, la temperatura futura se toma de observaciones históricas a posteriori y no incorpora el error de una previsión meteorológica; no equivale al rendimiento operativo. Los precios ESIOS son una serie histórica secundaria, nunca una variable predicha por este modelo. Actualmente hace falta generar el Parquet con `tests/probar_esios.py` (requiere `ESIOS_TOKEN`); mientras no exista el archivo, API y dashboard muestran que el histórico no está disponible.
+
+### Pruebas y revisión
+
+Ejecuta `python -m unittest discover -s src/api/tests`, `python -m unittest discover -s src/dashboard/tests` y `flake8 src/ --max-line-length=100`. El smoke test del modelo requiere las dependencias de `src/api/requirements.txt` y el artefacto original. Las cifras de `/evaluation` se calculan al consultar ese artefacto y los datos históricos locales; no están hardcodeadas.

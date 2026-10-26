@@ -1,66 +1,71 @@
-"""Overview with actual demand and Madrid temperature observations."""
+"""Demand-first executive view backed by the live API and saved forecasts."""
 
+import requests
 import streamlit as st
 
-from components import charts
-from components.cards import demand_metrics, metric, project_status
-from components.filters import period_filter
+from components.forecast import (
+    is_current, prediction_frame, render_summary, render_timeline,
+)
 from components.layout import header, section
-from components.states import dataset_ready
-from services.analysis import calendar_profile, select_period
-from utils.formatting import number, timestamp
+from services import api_client
 
 
 def render(datasets: dict) -> None:
-    header("Predicción Eléctrica",
-           "Análisis histórico de la demanda eléctrica en España peninsular")
-    demand, weather = datasets["demand"], datasets["weather"]
-    if demand.available:
-        st.markdown('<div class="overview-meta">REData · Último registro disponible: '
-                    f'{timestamp(demand.frame.timestamp.max())} · Hora peninsular</div>',
-                    unsafe_allow_html=True)
-    primary = demand if demand.available else weather
-    selected = period_filter(primary, "overview") if primary.available else primary.frame
-    if dataset_ready(demand) and not selected.empty:
-        demand_metrics(selected)
-        with st.container(border=True, key="panel-overview-demand"):
-            section("Evolución de la demanda eléctrica", "Demanda observada · MW")
-            charts.line(selected, "MW", "overview_demand", extrema=True, height=290)
-    with st.container(key="chart-pair-overview"):
-        left, right = st.columns([1.25, 1])
-        with left, st.container(border=True, key="panel-overview-profile"):
-            section("El perfil del periodo", "Demanda media por hora · MW")
-            if demand.available and not selected.empty:
-                profile = calendar_profile(selected, "hour")
-                charts.bars([f"{hour:02d}:00" for hour in profile.index], profile["mean"],
-                            profile["count"], "MW", "overview_profile", height=255)
-            else:
-                st.caption("El perfil estará disponible al cargar el histórico de demanda.")
-    with right, st.container(border=True, key="panel-overview-weather"):
-        section("Temperatura", "Madrid · temperatura del aire a 2 m · Open-Meteo")
-        if dataset_ready(weather):
-            if selected.empty:
-                frame = weather.frame.iloc[:0]
-            elif not demand.available:
-                frame = selected
-            elif (demand.available and demand.quality.get("timezone")
-                    and weather.quality.get("timezone")):
-                frame = weather.frame.loc[
-                    weather.frame.timestamp.ge(selected.timestamp.min())
-                    & weather.frame.timestamp.le(selected.timestamp.max())
-                ]
-            else:
-                period = st.session_state.get("period_overview", "7 días")
-                dates = st.session_state.get("dates_overview")
-                frame = select_period(weather.frame, period,
-                                      tuple(dates) if dates and len(dates) == 2 else None)
-            if not frame.empty:
-                metric("Temperatura media", number(frame.value.mean(), 1), "°C",
-                       f"Mínima {number(frame.value.min(), 1)} °C · "
-                       f"máxima {number(frame.value.max(), 1)} °C")
-                charts.line(frame, "°C", "overview_weather", charts.AMBER, height=190)
-            else:
-                st.info("No hay temperatura disponible en este periodo.")
-    with st.container(border=True, key="panel-overview-status"):
-        section("Estado del proyecto")
-        project_status(datasets, compact=True)
+    header("Demanda eléctrica peninsular", "Resumen ejecutivo de demanda y previsión horaria")
+    try:
+        status = api_client.cached_status()
+        model = api_client.cached_model_info()
+    except (requests.RequestException, ValueError) as error:
+        st.error(f"No se puede conectar con FastAPI ({type(error).__name__}).")
+        st.caption(f"API configurada: {api_client.BASE_URL}")
+        return
+
+    api_col, model_col, demand_col = st.columns(3)
+    api_col.metric("API", "Operativa" if status.get("api") else "No disponible")
+    model_label = model.get("model_type", "No disponible") if status.get(
+        "model_loaded") else "No disponible"
+    model_col.metric("Modelo", model_label)
+    demand_col.metric("Última demanda UTC", status.get("last_demand_utc") or "Sin datos")
+
+    section("Previsión", "Horizonte máximo 48 horas · modelo de demanda, no de precio.")
+    horizon = st.select_slider("Horizonte", options=[6, 12, 24, 48], value=24,
+                               format_func=lambda hours: f"{hours} horas",
+                               key="overview_horizon")
+    forecast_ready = bool(status.get("future_forecast_available"))
+    if not forecast_ready:
+        st.warning(status.get("reason") or "No hay datos actuales suficientes para predecir.")
+    if st.button("Generar previsión", type="primary", icon=":material/bolt:",
+                 disabled=not forecast_ready, key="overview_generate"):
+        try:
+            st.session_state["demand_forecast"] = api_client.post(
+                "/predict", {"horizon_hours": horizon})
+            st.session_state["demand_forecast_horizon"] = horizon
+        except requests.HTTPError as error:
+            detail = error.response.text if error.response is not None else str(error)
+            st.error(f"La API rechazó la previsión: {detail[:500]}")
+        except requests.RequestException as error:
+            st.error(f"No se pudo solicitar la previsión ({type(error).__name__}).")
+
+    forecast = st.session_state.get("demand_forecast")
+    if forecast and not is_current(forecast):
+        st.info("La previsión guardada caducó; genera otra para actualizar el resumen.")
+        st.session_state.pop("demand_forecast", None)
+        forecast = None
+    if forecast:
+        frame = prediction_frame(forecast)
+        render_summary(forecast, frame)
+        try:
+            history = api_client.cached_history(168)["records"]
+            render_timeline(history, forecast, frame, "overview_forecast")
+        except (requests.RequestException, ValueError) as error:
+            st.warning(f"No se pudo cargar el histórico para el gráfico ({type(error).__name__}).")
+        st.caption(f"Artefacto: {model.get('artifact_version', 'no identificado')} · "
+                   f"{forecast.get('horizon_hours', len(frame))} h solicitadas · "
+                   "la previsión está separada del último dato real.")
+    elif forecast_ready:
+        st.caption(f"Modelo cargado: {model.get('model_type', 'no identificado')} · "
+                   "solicita un horizonte para calcular las tarjetas y la gráfica.")
+
+    if st.button("Abrir análisis de picos y comparaciones", key="overview_details"):
+        st.session_state["current_page"] = "Predicción"
+        st.rerun()

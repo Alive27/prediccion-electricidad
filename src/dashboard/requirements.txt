@@ -2,3 +2,4 @@ streamlit
 plotly
 pandas
 pyarrow
+requests>=2.31,<3
