@@ -1,0 +1,31 @@
+import pandas as pd
+
+# Cargar datos
+demanda = pd.read_parquet("data/raw/redata_demanda_2024.parquet")
+meteo = pd.read_parquet("data/raw/openmeteo_madrid_2024.parquet")
+
+print("\n========== DEMANDA ELÉCTRICA ==========")
+print(demanda.head())
+print("\nColumnas:")
+print(demanda.columns.tolist())
+print("\nDimensiones:")
+print(demanda.shape)
+print("\nTipos de datos:")
+print(demanda.dtypes)
+print("\nValores nulos:")
+print(demanda.isnull().sum())
+print("\nEstadísticas:")
+print(demanda.describe())
+
+print("\n========== METEOROLOGÍA ==========")
+print(meteo.head())
+print("\nColumnas:")
+print(meteo.columns.tolist())
+print("\nDimensiones:")
+print(meteo.shape)
+print("\nTipos de datos:")
+print(meteo.dtypes)
+print("\nValores nulos:")
+print(meteo.isnull().sum())
+print("\nEstadísticas:")
+print(meteo.describe())
