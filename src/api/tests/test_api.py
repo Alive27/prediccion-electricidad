@@ -23,8 +23,11 @@ class ApiContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model_patch = patch.object(
             api, "MODEL_PATH", PROJECT_ROOT / "models" / "modelo_demanda_v01.joblib")
+        cls.price_model_patch = patch.object(
+            api, "PRICE_MODEL_PATH", PROJECT_ROOT / "models" / "modelo_precio_v01.joblib")
         cls.data_patch = patch.object(api, "DATA_DIR", PROJECT_ROOT / "data" / "raw")
         cls.model_patch.start()
+        cls.price_model_patch.start()
         cls.data_patch.start()
         cls.client = TestClient(api.app)
         cls.client.__enter__()
@@ -36,6 +39,7 @@ class ApiContractTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
         cls.model_patch.stop()
+        cls.price_model_patch.stop()
         cls.data_patch.stop()
 
     def test_model_and_health_report_verified_stale_artifact(self):
@@ -58,7 +62,9 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(len(history.json()["records"]), 2)
         invalid = self.client.post("/predict", json={"horizon_hours": 49})
         self.assertEqual(invalid.status_code, 422)
-        stale = self.client.post("/predict", json={"horizon_hours": 5})
+        self.assertEqual(self.client.post(
+            "/predict", json={"horizon_hours": 5}).status_code, 422)
+        stale = self.client.post("/predict", json={"horizon_hours": 6})
         self.assertEqual(stale.status_code, 503)
 
     def test_curves_endpoint_reports_missing_esios_credential_without_hiding_it(self):
@@ -79,6 +85,24 @@ class ApiContractTests(unittest.TestCase):
             self.assertIn("faltan variables", response.json()["detail"]["reason"])
         finally:
             api.app.state.service = service
+
+    def test_price_model_and_prediction_endpoint_are_independent(self):
+        info = self.client.get("/prices/model")
+        self.assertEqual(info.status_code, 200)
+        self.assertTrue(info.json()["loaded"])
+        for horizon in (6, 12, 24, 48):
+            with self.subTest(horizon=horizon):
+                response = self.client.post(
+                    "/prices/predict", json={"horizon_hours": horizon})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(response.json()["records"]), horizon)
+                self.assertEqual(response.json()["unit"], "€/MWh")
+        self.assertEqual(self.client.post(
+            "/prices/predict", json={"horizon_hours": 5}).status_code, 422)
+
+    def test_price_history_period_validation(self):
+        self.assertEqual(self.client.get("/prices/history", params={"days": 8}).status_code,
+                         422)
 
     def test_historical_evaluation_uses_real_model(self):
         evaluation = self.client.get("/evaluation")

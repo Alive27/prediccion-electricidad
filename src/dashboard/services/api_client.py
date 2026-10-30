@@ -74,3 +74,17 @@ def cached_comparison(hours: int = 48) -> dict:
 @st.cache_data(ttl=900, show_spinner=False)
 def cached_evaluation() -> dict:
     return get("/evaluation")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_price_history(days: int = 1) -> dict:
+    return get("/prices/history", {"days": days})
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_price_model() -> dict:
+    return get("/prices/model")
+
+
+def predict_price(horizon_hours: int) -> dict:
+    return post("/prices/predict", {"horizon_hours": horizon_hours})

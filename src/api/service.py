@@ -25,6 +25,8 @@ LOCAL_ZONE = "Europe/Madrid"
 LOGGER = logging.getLogger(__name__)
 ESIOS_URL = "https://api.esios.ree.es/indicators"
 ESIOS_SERIES = {"real": 1293, "official_forecast": 544}
+PVPC_INDICATOR = 1001
+PRICE_FEATURES = ["hora", "dia_semana", "mes", "dia_mes"]
 
 
 class DataUnavailable(RuntimeError):
@@ -33,6 +35,181 @@ class DataUnavailable(RuntimeError):
 
 class ModelUnavailable(RuntimeError):
     pass
+
+
+def load_price_model(path: Path) -> tuple[Any, dict[str, Any]]:
+    """Load and validate the existing calendar-only PVPC estimator."""
+    import joblib
+
+    if not path.is_file():
+        raise FileNotFoundError(f"No se encuentra el modelo de precios en {path}.")
+    model = joblib.load(path)
+    if not callable(getattr(model, "predict", None)):
+        raise TypeError("El artefacto de precios no contiene predict().")
+    names = getattr(model, "feature_names_in_", None)
+    if names is not None and list(names) != PRICE_FEATURES:
+        raise ValueError(f"Esquema de precios incompatible: {list(names)}")
+    count = getattr(model, "n_features_in_", len(PRICE_FEATURES))
+    if int(count) != len(PRICE_FEATURES):
+        raise ValueError(f"El modelo de precios espera {count} variables.")
+    if hasattr(model, "n_jobs"):
+        model.n_jobs = int(os.getenv("MODEL_N_JOBS", "1"))
+    return model, {
+        "model_type": type(model).__name__, "artifact": path.name,
+        "target": "precio", "unit": "€/MWh", "frequency": "1h",
+        "features": PRICE_FEATURES,
+        "timezone_convention": (
+            "Europe/Madrid (asunción explícita; el notebook no declara la zona del índice)"),
+    }
+
+
+class PriceService:
+    """PVPC history from ESIOS indicator 1001 and existing calendar model."""
+
+    def __init__(self, model, model_info, token: str = "", cache_dir: Path | None = None):
+        self.model = model
+        self.model_info = model_info
+        self.token = token.strip()
+        self.cache_path = cache_dir / "esios_pvpc_1001.parquet" if cache_dir else None
+        self.last_success_at = None
+        self.last_error = None
+        self._read_cache_metadata()
+
+    def _read_cache_metadata(self) -> None:
+        if self.cache_path is None:
+            return
+        metadata_path = self.cache_path.with_suffix(".json")
+        try:
+            if metadata_path.is_file():
+                self.last_success_at = json.loads(
+                    metadata_path.read_text(encoding="utf-8")).get("last_success_at_utc")
+        except (OSError, ValueError, TypeError):
+            LOGGER.warning("No se pudo leer metadato de caché PVPC.")
+
+    def _cached(self) -> pd.DataFrame:
+        if not self.cache_path or not self.cache_path.is_file():
+            return pd.DataFrame(columns=["timestamp_utc", "price_eur_mwh"])
+        frame = pd.read_parquet(self.cache_path)
+        frame["timestamp_utc"] = pd.to_datetime(frame.timestamp_utc, utc=True)
+        return frame.dropna().drop_duplicates("timestamp_utc", keep="last").sort_values(
+            "timestamp_utc")
+
+    def history(self, days: int = 1) -> dict:
+        if days not in (1, 2, 3, 7):
+            raise ValueError("El periodo de precios debe ser 1, 2, 3 o 7 días.")
+        now = pd.Timestamp.now(tz="UTC")
+        start = now - pd.Timedelta(days=days)
+        status, error = "connected", None
+        if not self.token:
+            status, error = "not_configured", "Falta ESIOS_API_TOKEN."
+        else:
+            try:
+                response = requests.get(
+                    f"{ESIOS_URL}/{PVPC_INDICATOR}",
+                    params={"start_date": start.isoformat(), "end_date": now.isoformat(),
+                            "geo_ids[]": 8741},
+                    headers={"Accept": "application/vnd.esios-api-v1+json",
+                             "x-api-key": self.token}, timeout=(3, 12))
+                response.raise_for_status()
+                indicator = response.json().get("indicator", {})
+                if int(indicator.get("id", -1)) != PVPC_INDICATOR:
+                    raise DataUnavailable("ESIOS devolvió un indicador distinto del PVPC 1001.")
+                name = str(indicator.get("name", "")).lower()
+                if "pvpc" not in name or "peníns" not in name and "penins" not in name:
+                    raise DataUnavailable("ESIOS no confirma PVPC peninsular en la respuesta.")
+                magnitudes = indicator.get("magnitud", [])
+                magnitude_text = " ".join(
+                    str(value) for magnitude in magnitudes if isinstance(magnitude, dict)
+                    for value in (magnitude.get("name", ""), magnitude.get("unit", ""))
+                ).lower()
+                if "precio" not in magnitude_text or "mwh" not in magnitude_text:
+                    raise DataUnavailable(
+                        "ESIOS no confirmó magnitud de precio expresada por MWh.")
+                geographies = indicator.get("geos", [])
+                peninsular = any(
+                    str(geo.get("geo_id")) == "8741"
+                    or "penins" in str(geo.get("geo_name", "")).lower()
+                    for geo in geographies if isinstance(geo, dict)
+                )
+                if not peninsular:
+                    raise DataUnavailable("ESIOS no confirmó la geografía Península (geo_id 8741).")
+                records = indicator.get("values", [])
+                frame = pd.DataFrame(records)
+                if frame.empty or not {"datetime_utc", "value"}.issubset(frame.columns):
+                    raise DataUnavailable("ESIOS no devolvió fechas y valores PVPC.")
+                frame = pd.DataFrame({
+                    "timestamp_utc": pd.to_datetime(frame.datetime_utc, utc=True, errors="coerce"),
+                    "price_eur_mwh": pd.to_numeric(frame.value, errors="coerce"),
+                }).dropna()
+                values_geo = pd.DataFrame(records)
+                if "geo_id" in values_geo:
+                    frame = frame.loc[pd.to_numeric(values_geo.geo_id,
+                                                    errors="coerce").eq(8741).to_numpy()]
+                frame = frame.loc[np.isfinite(frame.price_eur_mwh)]
+                frame = frame.drop_duplicates("timestamp_utc", keep="last").sort_values(
+                    "timestamp_utc")
+                self.last_success_at = now.isoformat()
+                self._write_cache(frame)
+                self.last_error = None
+            except (requests.RequestException, ValueError, KeyError, TypeError,
+                    DataUnavailable) as exc:
+                status, error = "unavailable", f"{type(exc).__name__}: {exc}"
+                self.last_error = error
+                LOGGER.warning("PVPC ESIOS no disponible (%s).", type(exc).__name__)
+                frame = self._cached()
+        if status == "not_configured":
+            frame = self._cached()
+        recent = frame.loc[frame.timestamp_utc.between(start, now)]
+        newest = frame.timestamp_utc.max() if not frame.empty else None
+        return {
+            "status": status, "error": error, "source": "ESIOS", "indicator_id": 1001,
+            "market": "PVPC 2.0TD", "geography": "Península", "unit": "€/MWh",
+            "frequency": "nativa ESIOS; sin remuestreo", "timezone": "UTC timestamps",
+            "requested_days": days,
+            "last_observation_utc": newest.isoformat() if newest is not None else None,
+            "last_success_at_utc": self.last_success_at,
+            "data_origin": (
+                "live" if status == "connected" else "cache" if not recent.empty else "none"),
+            "stale": bool(newest is not None and now - newest > pd.Timedelta(hours=26)),
+            "records": [{"timestamp_utc": row.timestamp_utc.isoformat(),
+                         "timestamp_local": row.timestamp_utc.tz_convert(LOCAL_ZONE).isoformat(),
+                         "price_eur_mwh": float(row.price_eur_mwh)}
+                        for row in recent.itertuples(index=False)],
+        }
+
+    def _write_cache(self, frame: pd.DataFrame) -> None:
+        if self.cache_path is not None and not frame.empty:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            frame.to_parquet(self.cache_path, index=False)
+            self.cache_path.with_suffix(".json").write_text(
+                json.dumps({"last_success_at_utc": self.last_success_at}),
+                encoding="utf-8")
+
+    def predict(self, horizon: int) -> dict:
+        if self.model is None:
+            raise ModelUnavailable(self.model_info.get("error", "Modelo de precios no disponible."))
+        if horizon not in (6, 12, 24, 48):
+            raise ValueError("El horizonte debe ser 6, 12, 24 o 48 horas.")
+        now_local = pd.Timestamp.now(tz=LOCAL_ZONE).floor("h")
+        stamps = pd.date_range(now_local + pd.Timedelta(hours=1), periods=horizon,
+                               freq="h")
+        features = pd.DataFrame({
+            "hora": stamps.hour, "dia_semana": stamps.dayofweek,
+            "mes": stamps.month, "dia_mes": stamps.day,
+        }, columns=PRICE_FEATURES)
+        try:
+            values = np.asarray(self.model.predict(features), dtype="float64").reshape(-1)
+        except Exception as exc:
+            raise ModelUnavailable(f"Error de inferencia ({type(exc).__name__}).") from exc
+        if len(values) != horizon or not np.isfinite(values).all():
+            raise ModelUnavailable("El modelo devolvió valores no finitos o longitud inesperada.")
+        return {"status": "available", "prediction_type": "model_estimate",
+                "model": self.model_info, "unit": "€/MWh", "frequency": "1h",
+                "horizon_hours": horizon, "generated_at_utc": pd.Timestamp.now(
+                    tz="UTC").isoformat(), "timezone": LOCAL_ZONE,
+                "records": [{"timestamp_utc": ts.tz_convert("UTC").isoformat(),
+                             "timestamp_local": ts.isoformat(), "price_eur_mwh": float(value)}
+                            for ts, value in zip(stamps, values)]}
 
 
 def load_model(path: Path) -> tuple[Any, dict[str, Any]]:

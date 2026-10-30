@@ -138,7 +138,7 @@ def _hourly_table(frame: pd.DataFrame, simulation: bool = False) -> None:
 
 
 def render(datasets: dict) -> None:
-    header("Modelo", "Previsión horaria con el modelo existente · 5, 12, 24 o 48 horas")
+    header("Modelo", "Previsión horaria con el modelo existente · 6, 12, 24 o 48 horas")
     try:
         status = api_client.cached_status()
     except (requests.RequestException, ValueError) as error:
@@ -165,7 +165,7 @@ def render(datasets: dict) -> None:
     elif not status.get("future_forecast_available"):
         st.warning(status.get("reason") or "Faltan entradas para una previsión de 48 horas.")
 
-    horizon = st.select_slider("Horizonte de predicción", options=[5, 12, 24, 48],
+    horizon = st.select_slider("Horizonte de predicción", options=[6, 12, 24, 48],
                                value=48, format_func=lambda value: f"{value} horas",
                                key="prediction_horizon")
     st.caption(

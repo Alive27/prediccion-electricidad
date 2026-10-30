@@ -7,8 +7,7 @@ import streamlit as st
 
 from components.icons import svg
 
-PAGES = ["Resumen", "Demanda", "Análisis histórico", "Modelo", "Precios",
-         "Datos", "Estado del sistema"]
+PAGES = ["Resumen", "Modelo", "Precios", "Datos", "Estado del sistema"]
 TOKENS = {
     "Claro": "--scheme:light;--paper:#f6f7f9;--card:#ffffff;--sidebar:#fcfcfd;"
              "--ink:#202630;--muted:#596575;--border:#e3e6eb;--blue:#2466ce;"
@@ -20,10 +19,10 @@ TOKENS = {
               "--grid:#343840;--shadow:0 2px 8px rgba(0,0,0,.09);",
 }
 NAV_GROUPS = (
-    ("EXPLORAR", (("Resumen", "dashboard"), ("Demanda", "show_chart"),
-                  ("Análisis histórico", "analytics"))),
-    ("MODELO", (("Modelo", "model_training"), ("Precios", "pending"))),
-    ("SISTEMA", (("Datos", "database"), ("Estado del sistema", "monitor_heart"))),
+    ("PREDICCIONES", (("Resumen", "dashboard"), ("Modelo", "model_training"),
+                      ("Precios", "payments"))),
+    ("DATOS", (("Datos", "database"),)),
+    ("ESTADO", (("Estado del sistema", "monitor_heart"),)),
 )
 
 
@@ -31,14 +30,16 @@ def navigate(page: str) -> None:
     st.session_state["current_page"] = page
 
 
-def sidebar() -> tuple[str, str, bool]:
+def sidebar() -> tuple[str, str]:
     with st.sidebar:
         st.markdown(
             f'<div class="brand"><span class="brand-icon">{svg("bolt")}</span>'
             '<div><strong>Predicción Eléctrica</strong><small>España peninsular</small>'
             '</div></div>', unsafe_allow_html=True,
         )
-        page = st.session_state.get("current_page", "Resumen")
+        if st.session_state.get("current_page") not in PAGES:
+            st.session_state["current_page"] = "Resumen"
+        page = st.session_state["current_page"]
         with st.container(key="sidebar-nav"):
             for group, items in NAV_GROUPS:
                 st.markdown(f'<div class="nav-heading">{group}</div>',
@@ -47,13 +48,8 @@ def sidebar() -> tuple[str, str, bool]:
                     st.button(label, icon=f":material/{icon}:", width="stretch",
                               type="primary" if label == page else "tertiary",
                               key=f"nav_{PAGES.index(label)}", on_click=navigate, args=(label,))
-        with st.container(key="sidebar-tools"):
-            theme = st.selectbox("Tema", ["Sistema", "Claro", "Oscuro"], key="appearance")
-            reload_requested = st.button("Actualizar datos", icon=":material/refresh:",
-                                         type="tertiary", key="refresh_data",
-                                         help="Actualiza fuentes y recarga el histórico.")
-            st.caption("REData · Open-Meteo · Parquet 2024")
-    return page, theme, reload_requested
+        theme = st.selectbox("Tema", ["Sistema", "Claro", "Oscuro"], key="appearance")
+    return page, theme
 
 
 def apply_theme(theme: str) -> None:
