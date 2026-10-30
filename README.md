@@ -6,7 +6,7 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=Streamlit&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 
-Aplicación de preview para consultar demanda real de la España peninsular, analizar el histórico de 2024 y generar una previsión horaria de 5, 12, 24 o 48 horas con el modelo entrenado existente. FastAPI obtiene y valida las fuentes; Streamlit consume la API interna.
+Aplicación de preview para consultar el estado de los modelos y datos, y generar predicciones horarias de consumo y de precios. FastAPI sirve ambos modelos de forma independiente; Streamlit consume la API interna.
 
 ---
 
@@ -64,12 +64,11 @@ El repositorio, llamado `prediccion-electricidad`, seguirá la siguiente estruct
 
 ## 🖥️ Dashboard
 
-*   **Resumen:** Última observación real y variación respecto a la hora anterior (solo cuando ambas observaciones consecutivas existen); máximo y mínimo de la previsión real de 48 horas cuando está disponible.
-*   **Demanda:** Exploración del Parquet histórico de 2024, con sus fechas visibles.
-*   **Análisis histórico:** Perfil horario, semanal, mensual, extremos y distribución de demanda. No muestra análisis meteorológico.
-*   **Modelo:** Selector de horizonte de 5, 12, 24 o 48 horas; la API calcula la salida seleccionada con resolución horaria, tabla por instante y resúmenes derivados de esas salidas. La simulación histórica necesita confirmación y muestra fecha de referencia.
-*   **Precios:** Sección pendiente; no consulta ni muestra series de precio. El modelo predice demanda en MW, no precios en €/MWh.
-*   **Datos y Estado del sistema:** Cobertura del archivo 2024, liveness de la API, preparación del modelo, conexión de fuentes y frescura. La evaluación técnica continúa disponible en `GET /evaluation`, fuera de la navegación pública.
+*   **Resumen:** Última demanda real disponible y resumen/gráfica de su previsión horaria cuando el modelo y sus entradas están listos.
+*   **Modelo:** Predicción de consumo con el artefacto existente, selector de 6, 12, 24 o 48 horas, resumen, gráficas y tabla horaria. Las simulaciones con datos antiguos requieren confirmación explícita.
+*   **Precios:** Predicción automática de 24 horas con `models/modelo_precio_v01.joblib`; permite seleccionar 6, 12, 24 o 48 horas y muestra resumen, gráfica y tabla en €/MWh. El modelo usa `hora`, `dia_semana`, `mes` y `dia_mes`; no utiliza demanda, meteorología, histórico de precios ni conexión a ESIOS.
+*   El notebook de precios no documenta la zona horaria del índice de entrenamiento: las fechas futuras usan `Europe/Madrid` como supuesto explícito, por lo que la compatibilidad temporal exacta no está validada.
+*   **Datos y Estado del sistema:** Cobertura de los datos cargados, disponibilidad de la API, fuentes y estado independiente de los modelos de consumo y precios.
 
 > **Interfaz de Usuario (UI):** Las curvas temporales permiten desplazamiento y zoom, tooltips unificados y botón «Restablecer vista». El histórico ofrece intervalos de 24/48 horas, 3/7 días y periodos más largos. Las horas se almacenan y comparan en UTC; la interfaz las presenta en Europe/Madrid, incluyendo la zona en el tooltip y las horas de cambio estacional.
 
@@ -85,6 +84,7 @@ MAX_DEMAND_AGE_HOURS=6
 DEMAND_LOOKBACK_DAYS=14
 API_TIMEOUT_SECONDS=35
 LIVE_DEMAND_CACHE_PATH=/cache/redata_demanda_live.parquet
+PRICE_MODEL_PATH=/models/modelo_precio_v01.joblib
 ```
 
 ### Desarrollo local (Sin Docker)
@@ -135,8 +135,13 @@ docker compose up --build
 *   `GET /history?limit=168`: Observaciones de demanda con procedencia; admite `start` y `end` ISO 8601.
 *   `GET /curves?hours=168`: Indicadores ESIOS 1293 y 544, separados y con metadatos de resolución, frescura y conexión; requiere `ESIOS_API_TOKEN`.
 *   `GET /comparison?hours=48`: Comparación REData/ESIOS únicamente en marcas temporales UTC exactamente coincidentes.
-*   `POST /predict`: Cuerpo `{"horizon_hours":48}`; horizontes permitidos 5, 12, 24 o 48, en horas. Para datos obsoletos se requiere además `{"allow_stale_simulation":true}` y las temperaturas históricas exactas deben estar disponibles.
+*   `POST /predict`: Cuerpo `{"horizon_hours":48}`; horizontes permitidos 6, 12, 24 o 48, en horas. Para datos obsoletos se requiere además `{"allow_stale_simulation":true}` y las temperaturas históricas exactas deben estar disponibles.
 *   `GET /evaluation`: Evaluación retrospectiva técnica, no expuesta en las páginas públicas.
+*   `GET /prices/history?days=1`: histórico PVPC real del indicador ESIOS 1001 para Península; admite 1, 2, 3 o 7 días y devuelve unidad, origen, frescura y timestamps UTC/local.
+*   `GET /prices/model`: estado y esquema del modelo de precios cargado.
+*   `POST /prices/predict`: cuerpo `{"horizon_hours":24}`; acepta 6, 12, 24 o 48 y devuelve estimaciones etiquetadas como salida del modelo.
+
+ESIOS requiere `ESIOS_API_TOKEN`. El indicador 1001 es PVPC (término de energía de la tarifa regulada); no debe confundirse con el indicador 600, que es el mercado diario SPOT. El artefacto solo tiene variables temporales, así que estas estimaciones son una proyección calendario basada en el Random Forest entrenado y no incorporan condiciones futuras de oferta/demanda. La zona horaria futura se asume Europe/Madrid porque el notebook no deja constancia de la conversión temporal aplicada al índice.
 
 ---
 

@@ -12,8 +12,70 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from service import (DataUnavailable, DemandService, FEATURES,  # noqa: E402
-                     prepare_features)  # noqa: E402
+from service import (DataUnavailable, DemandService, FEATURES, ModelUnavailable,  # noqa: E402
+                     PRICE_FEATURES, PriceService, load_price_model, prepare_features)  # noqa: E402
+
+
+class PriceServiceTests(unittest.TestCase):
+    class Model:
+        feature_names_in_ = np.array(PRICE_FEATURES)
+        n_features_in_ = 4
+
+        def predict(self, frame):
+            self.features = frame.copy()
+            return np.arange(len(frame), dtype=float) + 50
+
+    def test_existing_artifact_loads_with_expected_schema(self):
+        path = Path(__file__).resolve().parents[3] / "models" / "modelo_precio_v01.joblib"
+        model, info = load_price_model(path)
+        self.assertEqual(type(model).__name__, "RandomForestRegressor")
+        self.assertEqual(info["features"], PRICE_FEATURES)
+        self.assertEqual(info["unit"], "€/MWh")
+
+    def test_prediction_horizons_and_local_calendar_features(self):
+        model = self.Model()
+        service = PriceService(model, {"loaded": True})
+        for horizon in (6, 12, 24, 48):
+            result = service.predict(horizon)
+            self.assertEqual(len(result["records"]), horizon)
+            self.assertEqual(list(model.features.columns), PRICE_FEATURES)
+            self.assertEqual(result["prediction_type"], "model_estimate")
+            self.assertTrue(np.isfinite([r["price_eur_mwh"] for r in result["records"]]).all())
+
+    def test_model_absence_and_invalid_horizon_are_errors(self):
+        with self.assertRaises(ModelUnavailable):
+            PriceService(None, {"error": "missing artifact"}).predict(6)
+        with self.assertRaises(ValueError):
+            PriceService(self.Model(), {}).predict(5)
+
+    def test_history_validates_pvpc_indicator_geo_unit_and_sorts(self):
+        current_hour = pd.Timestamp.now(tz="UTC").floor("h")
+        payload = {"indicator": {
+            "id": 1001, "name": "Término de facturación PVPC Península",
+            "magnitud": [{"name": "Precio", "unit": "€/MWh"}],
+            "geos": [{"geo_id": 8741, "geo_name": "Península"}],
+            "values": [
+                {"datetime_utc": (current_hour - pd.Timedelta(hours=1)).isoformat(),
+                 "geo_id": 8741, "value": 1.0},
+                {"datetime_utc": current_hour.isoformat(), "geo_id": 8741, "value": 2.0},
+            ],
+        }}
+        response = Mock(status_code=200)
+        response.json.return_value = payload
+        response.raise_for_status.return_value = None
+        service = PriceService(None, {}, "unit-test-token")
+        with patch("service.requests.get", return_value=response):
+            result = service.history(1)
+        self.assertEqual(result["indicator_id"], 1001)
+        self.assertEqual(result["unit"], "€/MWh")
+        self.assertEqual([row["price_eur_mwh"] for row in result["records"]], [1.0, 2.0])
+
+    def test_history_failure_is_explicit_and_never_fabricates_data(self):
+        service = PriceService(None, {}, "unit-test-token")
+        with patch("service.requests.get", side_effect=requests.ConnectionError):
+            result = service.history(1)
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["records"], [])
 
 
 class FeaturePreparationTests(unittest.TestCase):
@@ -239,7 +301,7 @@ class DemandServiceTests(unittest.TestCase):
                                 "temperature_2m": np.linspace(15, 18, len(weather_times))})
         service.demand_data = lambda: demand.copy()
         service.weather_data = lambda: weather.copy()
-        for horizon in (5, 12, 24, 48):
+        for horizon in (6, 12, 24, 48):
             with self.subTest(horizon=horizon):
                 forecast = service.predict(horizon)
                 stamps = pd.to_datetime([row["timestamp_utc"] for row in forecast["predictions"]],

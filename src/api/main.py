@@ -11,10 +11,11 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from service import (DataUnavailable, DemandService, ModelUnavailable,
-                     load_model)
+                     PriceService, load_model, load_price_model)
 
 
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "/models/modelo_demanda_v01.joblib"))
+PRICE_MODEL_PATH = Path(os.getenv("PRICE_MODEL_PATH", "/models/modelo_precio_v01.joblib"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data/raw"))
 FRESHNESS_HOURS = int(os.getenv("MAX_DEMAND_AGE_HOURS", "6"))
 LOGGER = logging.getLogger(__name__)
@@ -34,6 +35,19 @@ async def lifespan(app: FastAPI):
         app.state.model_error = (
             f"No se pudo cargar el modelo ({type(error).__name__}): {error}")
         LOGGER.exception("No se pudo cargar o validar el artefacto de demanda.")
+    try:
+        price_model, price_info = load_price_model(PRICE_MODEL_PATH)
+        app.state.price_service = PriceService(
+            price_model, price_info, os.getenv("ESIOS_API_TOKEN", ""),
+            Path(os.getenv("ESIOS_CACHE_DIR", str(DATA_DIR.parent / "cache"))))
+        app.state.price_model_error = None
+    except Exception as error:
+        app.state.price_service = PriceService(
+            None, {"error": f"No se pudo cargar el modelo de precios ({type(error).__name__})."},
+            os.getenv("ESIOS_API_TOKEN", ""),
+            Path(os.getenv("ESIOS_CACHE_DIR", str(DATA_DIR.parent / "cache"))))
+        app.state.price_model_error = f"{type(error).__name__}: {error}"
+        LOGGER.exception("No se pudo cargar el modelo de precios.")
     yield
 
 
@@ -42,8 +56,12 @@ app = FastAPI(title="Predicción de demanda eléctrica", version="0.1.0",
 
 
 class PredictionRequest(BaseModel):
-    horizon_hours: Literal[5, 12, 24, 48]
+    horizon_hours: Literal[6, 12, 24, 48]
     allow_stale_simulation: bool = False
+
+
+class PricePredictionRequest(BaseModel):
+    horizon_hours: Literal[6, 12, 24, 48]
 
 
 def get_service() -> DemandService:
@@ -138,4 +156,24 @@ def evaluation():
     try:
         return get_service().evaluation()
     except DataUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/prices/history")
+def price_history(days: Literal[1, 2, 3, 7] = 1):
+    return app.state.price_service.history(days)
+
+
+@app.get("/prices/model")
+def price_model_info():
+    return {"loaded": app.state.price_service.model is not None,
+            "model": app.state.price_service.model_info,
+            "error": app.state.price_model_error}
+
+
+@app.post("/prices/predict")
+def predict_price(request: PricePredictionRequest):
+    try:
+        return app.state.price_service.predict(request.horizon_hours)
+    except ModelUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error

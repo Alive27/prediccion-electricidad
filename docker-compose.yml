@@ -6,6 +6,7 @@ services:
       - "8000:8000"
     environment:
       MODEL_PATH: /models/modelo_demanda_v01.joblib
+      PRICE_MODEL_PATH: /models/modelo_precio_v01.joblib
       DATA_DIR: /data/raw
       LIVE_DEMAND_CACHE_PATH: /cache/redata_demanda_live.parquet
       ESIOS_API_TOKEN: ${ESIOS_API_TOKEN:-}

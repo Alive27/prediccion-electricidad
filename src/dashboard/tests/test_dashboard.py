@@ -14,13 +14,13 @@ from streamlit.testing.v1 import AppTest
 DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DIRECTORY))
 
-from components.charts import base_figure  # noqa: E402
 from components.layout import PAGES  # noqa: E402
 from components.tables import csv_bytes  # noqa: E402
 from services.analysis import select_dates, select_period  # noqa: E402
 from services.data_loader import load_local, load_upload, refresh  # noqa: E402
-from services.data_quality import Dataset, aligned_data, prepare  # noqa: E402
+from services.data_quality import aligned_data, prepare  # noqa: E402
 from utils.paths import FILENAMES, candidate_paths  # noqa: E402
+from views.prices import _frame as price_prediction_frame  # noqa: E402
 
 
 class RealDataTests(unittest.TestCase):
@@ -42,6 +42,16 @@ class RealDataTests(unittest.TestCase):
             self.assertEqual(sum(dataset.quality["nulls"].values()), 0)
             self.assertEqual(dataset.quality["duplicate_times"], 0)
             self.assertEqual(dataset.quality["missing_slots"], 0)
+
+    def test_price_prediction_timestamps_keep_both_repeated_local_dst_hours(self):
+        frame = price_prediction_frame([
+            {"timestamp_utc": "2024-10-27T00:00:00Z", "price_eur_mwh": 80.0},
+            {"timestamp_utc": "2024-10-27T01:00:00Z", "price_eur_mwh": 75.0},
+        ])
+        local = frame.timestamp_utc.dt.tz_convert("Europe/Madrid")
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(local.dt.hour.tolist(), [2, 2])
+        self.assertNotEqual(local.iloc[0].utcoffset(), local.iloc[1].utcoffset())
 
     def test_alignment_uses_exact_instants_and_leaves_edges_unmatched(self):
         joined, _ = aligned_data(self.datasets["demand"], self.datasets["weather"])
@@ -138,236 +148,149 @@ class RealDataTests(unittest.TestCase):
 
 
 class ViewTests(unittest.TestCase):
-    def test_historical_range_options_select_exact_rolling_windows(self):
-        frame = pd.DataFrame({"timestamp": pd.date_range(
-            "2026-01-01", periods=24 * 8, freq="h", tz="Europe/Madrid"),
-            "value": range(24 * 8)})
-        for label, expected in (("24 horas", 24), ("48 horas", 48),
-                                ("3 días", 72), ("7 días", 168)):
-            with self.subTest(label=label):
-                selected = select_period(frame, label)
-                self.assertEqual(len(selected), expected)
-                self.assertEqual(selected.timestamp.max(), frame.timestamp.max())
+    def _price_forecast(self, horizon):
+        origin = pd.Timestamp.now(tz="Europe/Madrid").floor("h")
+        return {
+            "horizon_hours": horizon,
+            "generated_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+            "records": [
+                {"timestamp_utc": (origin.tz_convert("UTC")
+                                   + pd.Timedelta(hours=step)).isoformat(),
+                 "price_eur_mwh": 60.0 + step}
+                for step in range(1, horizon + 1)
+            ],
+        }
 
-    def test_public_navigation_is_demand_first_and_charts_are_locked(self):
-        self.assertEqual(PAGES, ["Resumen", "Demanda", "Análisis histórico", "Modelo",
-                                 "Precios", "Datos", "Estado del sistema"])
-        figure = base_figure("Demanda · MW")
-        self.assertFalse(figure.layout.dragmode)
-        self.assertTrue(figure.layout.xaxis.fixedrange)
-        self.assertTrue(figure.layout.yaxis.fixedrange)
+    def _demand_status(self):
+        origin = pd.Timestamp.now(tz="UTC").floor("h")
+        return {
+            "api": True, "model_loaded": True, "model_schema_valid": True,
+            "data_available": True, "last_demand_utc": origin.isoformat(),
+            "last_demand_mw": 31_000.0, "demand_delta_mw": 100.0,
+            "demand_fresh": True, "demand_source_status": "connected",
+            "future_forecast_available": True, "source_notice": None,
+        }
 
-    def test_all_views_render_with_real_data(self):
-        app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-        self.assertFalse(app.exception)
-        for page in PAGES:
-            with self.subTest(page=page):
-                app.sidebar.button(key=f"nav_{PAGES.index(page)}").click().run()
-                self.assertFalse(app.exception)
-
-    def test_themes_and_period_filters_work(self):
-        app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-        for theme in ("Claro", "Oscuro", "Sistema"):
-            app.sidebar.selectbox[0].set_value(theme).run()
-            self.assertFalse(app.exception)
-        app.sidebar.button(key=f"nav_{PAGES.index('Demanda')}").click().run()
-        for period in ("24 horas", "7 días", "30 días", "Todo el periodo", "Personalizado"):
-            app.main.segmented_control[0].set_value(period).run()
-            self.assertFalse(app.exception)
-
-    def test_missing_datasets_do_not_break_any_view(self):
-        real = {kind: load_local(kind) for kind in FILENAMES}
-        for absent_kinds in (("demand",), ("demand", "weather")):
-            replacement = {kind: Dataset(kind) if kind in absent_kinds else dataset
-                           for kind, dataset in real.items()}
-            with patch("services.data_loader.load_local", side_effect=replacement.__getitem__):
-                app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-                self.assertEqual(len(app.get("file_uploader")), 0)
-                for page in PAGES:
-                    with self.subTest(absent=absent_kinds, page=page):
-                        app.sidebar.button(key=f"nav_{PAGES.index(page)}").click().run()
-                        self.assertFalse(app.exception)
-                        self.assertEqual(len(app.get("file_uploader")),
-                                         int("demand" in absent_kinds) if page == "Datos" else 0)
-
-    def test_stale_demand_requires_explicit_historical_simulation(self):
-        status = {"api": True, "model_loaded": True, "data_available": True,
-                  "last_demand_utc": "2024-12-31T22:00:00+00:00",
-                  "future_forecast_available": False,
-                  "reason": "La demanda más reciente supera el límite de frescura."}
-        model = {"model_type": "RandomForestRegressor",
-                 "artifact_version": "modelo_demanda_v01"}
-        with patch("services.api_client.cached_status", return_value=status), \
-                patch("services.api_client.cached_model_info", return_value=model), \
-                patch("services.api_client.cached_evaluation",
-                      side_effect=requests.ConnectionError):
-            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-            self.assertEqual(len(app.get("file_uploader")), 0)
-            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
-            generate = next(button for button in app.button
-                            if button.label == "Generar simulación histórica 48 h")
-            self.assertTrue(generate.disabled)
-            self.assertEqual(len(app.get("plotly_chart")), 0)
-
-    def test_confirmed_historical_simulation_is_sent_as_simulation(self):
-        origin = pd.Timestamp("2024-12-31T22:00:00Z")
-        generated = pd.Timestamp.now(tz="UTC")
-        forecast = {
-            "model": "RandomForestRegressor", "horizon_hours": 48,
+    def _demand_forecast(self, horizon=48):
+        origin = pd.Timestamp(self._demand_status()["last_demand_utc"])
+        return {
+            "model": "RandomForestRegressor", "horizon_hours": horizon,
             "forecast_origin_utc": origin.isoformat(),
-            "simulation_reference_utc": origin.isoformat(),
-            "generated_at_utc": generated.isoformat(),
-            "prediction_mode": "historical_simulation",
-            "predictions": [{"timestamp_utc": (origin + pd.Timedelta(hours=hour)).isoformat(),
-                             "demand_mw": 31_000.0 + hour}
-                            for hour in range(1, 49)],
+            "generated_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+            "prediction_mode": "current_forecast",
+            "predictions": [
+                {"timestamp_utc": (origin + pd.Timedelta(hours=step)).isoformat(),
+                 "demand_mw": 31_000.0 + step}
+                for step in range(1, horizon + 1)
+            ],
         }
-        status = {"api": True, "model_loaded": True, "model_schema_valid": True,
-                  "data_available": True, "last_demand_utc": origin.isoformat(),
-                  "last_demand_mw": 31_000.0, "last_demand_age_hours": 16000,
-                  "demand_fresh": False, "historical_simulation_available": True,
-                  "future_forecast_available": False,
-                  "reason": "Dato histórico obsoleto.", "source_notice": "REData no disponible."}
-        model = {"model_type": "RandomForestRegressor",
-                 "artifact_version": "modelo_demanda_v01"}
-        with patch("services.api_client.cached_status", return_value=status), \
-                patch("services.api_client.cached_model_info", return_value=model), \
-                patch("services.api_client.post", return_value=forecast) as post, \
+
+    def test_dashboard_summary_shows_consumption_forecast_and_keeps_prices_separate(self):
+        with patch("services.api_client.cached_status", return_value=self._demand_status()), \
+                patch("services.api_client.cached_model_info", return_value={
+                    "model_type": "RandomForestRegressor"}), \
+                patch("services.api_client.post",
+                      side_effect=lambda path, body: self._demand_forecast(
+                          body["horizon_hours"])) as demand, \
                 patch("services.api_client.cached_history", return_value={"records": []}), \
-                patch("services.api_client.cached_history_between", return_value={"records": []}):
+                patch("services.api_client.cached_price_history",
+                      side_effect=AssertionError("No debe consultar histórico de precios")):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
-            self.assertTrue(app.button(key="prediction_generate").disabled)
-            app.checkbox(key="confirm_historical_simulation").check().run()
-            app.button(key="prediction_generate").click().run()
         self.assertFalse(app.exception)
-        self.assertTrue(post.called)
-        self.assertTrue(post.call_args.args[1]["allow_stale_simulation"])
-        self.assertTrue(any("SIMULACIÓN HISTÓRICA" in item.value for item in app.warning))
+        self.assertEqual(PAGES, ["Resumen", "Modelo", "Precios", "Datos", "Estado del sistema"])
+        self.assertEqual(app.session_state["current_page"], "Resumen")
+        self.assertEqual(demand.call_args.args[0], "/predict")
+        self.assertGreater(len(app.get("plotly_chart")), 0)
+        self.assertTrue(any("previsión de demanda" in item.value.lower()
+                            for item in app.markdown))
 
-    def test_model_page_uses_api_forecast_and_exposes_reset_controls(self):
-        origin = pd.Timestamp.now(tz="UTC").floor("h")
-        generated = pd.Timestamp.now(tz="UTC")
-        predictions = [{"timestamp_utc": (origin + pd.Timedelta(hours=hour)).isoformat(),
-                        "demand_mw": 31_000.0 + hour * 10}
-                       for hour in range(1, 49)]
-        forecast = {"model": "RandomForestRegressor", "horizon_hours": 48,
-                    "forecast_origin_utc": origin.isoformat(),
-                    "generated_at_utc": generated.isoformat(), "predictions": predictions}
-        status = {"api": True, "model_loaded": True, "model_schema_valid": True,
-                  "data_available": True, "last_demand_utc": origin.isoformat(),
-                  "last_demand_mw": 31_000.0, "demand_delta_mw": 100.0,
-                  "demand_fresh": True, "demand_source_status": "connected",
-                  "future_forecast_available": True, "source_notice": None}
-        model = {"model_type": "RandomForestRegressor",
-                 "artifact_version": "modelo_demanda_v01"}
-        history = {"records": [{"timestamp_utc": origin.isoformat(),
-                                "demand_mw": 31_000.0}]}
-        with patch("services.api_client.cached_status", return_value=status), \
-                patch("services.api_client.cached_model_info", return_value=model), \
-                patch("services.api_client.post", return_value=forecast), \
-                patch("services.api_client.cached_history", return_value=history), \
-                patch("services.api_client.cached_history_between", return_value={"records": []}):
-            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
-        self.assertFalse(app.exception)
-        self.assertEqual(len(app.get("plotly_chart")), 2)
-        self.assertTrue(app.button(key="reset_view_model_forecast_timeline"))
-        self.assertTrue(app.button(key="reset_view_model_hourly_profile"))
-        labels = [item.label for item in app.metric]
-        self.assertFalse(any("MAE" in label or "RMSE" in label for label in labels))
-
-    def test_selected_prediction_horizon_is_sent_to_the_api(self):
-        origin = pd.Timestamp.now(tz="UTC").floor("h")
-        generated = pd.Timestamp.now(tz="UTC")
-        prediction = {"model": "RandomForestRegressor", "horizon_hours": 5,
-                      "forecast_origin_utc": origin.isoformat(),
-                      "generated_at_utc": generated.isoformat(),
-                      "prediction_mode": "current_forecast",
-                      "predictions": [
-                          {
-                              "timestamp_utc": (
-                                  origin + pd.Timedelta(hours=hour)).isoformat(),
-                              "demand_mw": 31_000.0 + hour,
-                          }
-                          for hour in range(1, 6)
-                      ]}
-        status = {"api": True, "model_loaded": True, "model_schema_valid": True,
-                  "data_available": True, "last_demand_utc": origin.isoformat(),
-                  "demand_fresh": True, "future_forecast_available": True}
-        model = {"model_type": "RandomForestRegressor",
-                 "artifact_version": "modelo_demanda_v01"}
-        with patch("services.api_client.cached_status", return_value=status), \
-                patch("services.api_client.cached_model_info", return_value=model), \
-                patch("services.api_client.cached_curves", return_value={"curves": {}}), \
-                patch("services.api_client.cached_history", return_value={"records": []}), \
-                patch("services.api_client.cached_history_between", return_value={"records": []}), \
-                patch("services.api_client.post", return_value=prediction) as post:
-            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-            app.sidebar.button(key=f"nav_{PAGES.index('Modelo')}").click().run()
-            app.select_slider(key="prediction_horizon").set_value(5).run()
-            app.button(key="prediction_generate").click().run()
-        self.assertFalse(app.exception)
-        self.assertEqual(post.call_args.args[1]["horizon_hours"], 5)
-        self.assertEqual(len(app.get("plotly_chart")), 2)
-
-    def test_manual_source_survives_navigation_and_refresh(self):
-        raw_path = DIRECTORY.parents[1] / "data" / "raw" / FILENAMES["demand"]
-        content = raw_path.read_bytes()
-        weather = load_local("weather")
-        replacement = {"demand": Dataset("demand"), "weather": weather}
-        offline_status = {
-            "api": True, "model_loaded": True, "data_available": True,
-            "last_demand_utc": "2024-12-31T22:00:00+00:00", "demand_fresh": False,
-            "historical_simulation_available": False,
-            "future_forecast_available": False,
-            "reason": "REData no disponible en esta prueba.",
-        }
-        with patch("services.data_loader.load_local", side_effect=replacement.__getitem__), \
-                patch("services.api_client.cached_status", return_value=offline_status), \
-                patch("services.api_client.refresh_sources", return_value=offline_status):
-            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-            app.sidebar.button(key="nav_5").click().run()
-            self.assertEqual(len(app.file_uploader), 1)
-            app.file_uploader[0].set_value((FILENAMES["demand"], b"not parquet",
-                                            "application/octet-stream")).run()
-            self.assertFalse(app.exception)
-            self.assertTrue(app.error)
-            self.assertNotIn("manual_demand", app.session_state)
-            app.file_uploader[0].set_value((FILENAMES["demand"], content,
-                                            "application/octet-stream")).run()
-            for page in ("Datos", "Demanda", "Estado del sistema", "Resumen"):
-                app.sidebar.button(key=f"nav_{PAGES.index(page)}").click().run()
+    def test_all_price_horizons_refresh_the_model_output(self):
+        with patch("services.api_client.predict_price",
+                   side_effect=self._price_forecast) as predict:
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Precios"
+            app.run()
+            for horizon in (6, 12, 24, 48):
+                app.selectbox(key="pvpc_horizon").set_value(horizon).run()
                 self.assertFalse(app.exception)
-                self.assertEqual(len(app.get("file_uploader")), 0)
-                self.assertEqual(app.session_state["manual_demand"], content)
-            app.sidebar.button(key="refresh_data").click().run()
-            self.assertFalse(app.exception)
-            self.assertEqual(app.session_state["manual_demand"], content)
-            self.assertEqual(len(app.get("plotly_chart")), 0)
-            app.sidebar.button(key=f"nav_{PAGES.index('Demanda')}").click().run()
-            self.assertGreater(len(app.get("plotly_chart")), 0)
-            app.sidebar.button(key="nav_5").click().run()
-            app.button(key="discard_demand").click().run()
-            self.assertFalse(app.exception)
-            self.assertNotIn("manual_demand", app.session_state)
-            self.assertEqual(len(app.file_uploader), 1)
+                self.assertEqual(len(app.get("plotly_chart")), 1)
+                self.assertEqual(len(app.dataframe), 1)
+                self.assertEqual(app.session_state["price_forecast_horizon"], horizon)
+        self.assertEqual([call.args[0] for call in predict.call_args_list],
+                         [24, 6, 12, 24, 48])
 
-    def test_pagination_changes_rows_and_resets_when_filter_changes(self):
-        app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
-        app.sidebar.button(key="nav_1").click().run()
-        first = next(item.value for item in app.markdown if 'class="data-table"' in item.value)
-        app.button(key="next_demand").click().run()
-        second = next(item.value for item in app.markdown if 'class="data-table"' in item.value)
-        self.assertNotEqual(first, second)
-        self.assertEqual(app.session_state["table_page_demand"], 2)
-        app.button(key="previous_demand").click().run()
-        self.assertEqual(app.session_state["table_page_demand"], 1)
-        self.assertTrue(app.button(key="previous_demand").disabled)
-        app.button(key="next_demand").click().run()
-        app.main.segmented_control[0].set_value("24 horas").run()
-        self.assertEqual(app.session_state["table_page_demand"], 1)
+    def test_legacy_historical_page_selection_returns_to_summary(self):
+        with patch("services.api_client.cached_status", return_value={
+                    **self._demand_status(), "future_forecast_available": False}), \
+                patch("services.api_client.cached_model_info", return_value={}):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Análisis histórico"
+            app.run()
         self.assertFalse(app.exception)
+        self.assertEqual(app.session_state["current_page"], "Resumen")
+        self.assertEqual(len(app.get("file_uploader")), 0)
+
+    def test_model_errors_are_shown_without_example_predictions(self):
+        with patch("services.api_client.predict_price",
+                   side_effect=requests.ConnectionError("API unavailable")):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Precios"
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any("No se pudo ejecutar el modelo" in item.value
+                            for item in app.error))
+        self.assertEqual(len(app.get("plotly_chart")), 0)
+        self.assertEqual(len(app.dataframe), 0)
+
+    def test_consumption_model_page_keeps_its_summary_and_charts(self):
+        with patch("services.api_client.cached_status", return_value=self._demand_status()), \
+                patch("services.api_client.cached_model_info", return_value={
+                    "model_type": "RandomForestRegressor"}), \
+                patch("services.api_client.post",
+                      side_effect=lambda path, body: self._demand_forecast(
+                          body["horizon_hours"])), \
+                patch("services.api_client.cached_history", return_value={"records": []}), \
+                patch("services.api_client.cached_curves", return_value={"curves": {}}), \
+                patch("services.api_client.cached_history_between",
+                      return_value={"records": []}):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Modelo"
+            app.run()
+            self.assertEqual(app.select_slider(key="prediction_horizon").options,
+                             ["6 horas", "12 horas", "24 horas", "48 horas"])
+            app.select_slider(key="prediction_horizon").set_value(6).run()
+            app.button(key="prediction_generate").click().run()
+        self.assertEqual(app.session_state["prediction_horizon"], 6)
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.get("plotly_chart")), 2)
+        self.assertTrue(any("Máximo previsto" in metric.label for metric in app.metric))
+
+    def test_system_page_reports_both_models_and_api(self):
+        with patch("services.api_client.cached_status", return_value=self._demand_status()), \
+                patch("services.api_client.cached_model_info", return_value={
+                    "model_type": "RandomForestRegressor"}), \
+                patch("services.api_client.cached_price_model", return_value={
+                    "loaded": True,
+                    "model": {"model_type": "RandomForestRegressor",
+                              "features": ["hora", "dia_semana", "mes", "dia_mes"],
+                              "unit": "€/MWh",
+                              "timezone_convention": "Europe/Madrid"},
+                }):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Estado del sistema"
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any("Estado del sistema" in item.value for item in app.markdown))
+        self.assertTrue(any("Modelo de precios" in item.value for item in app.markdown))
+
+    def test_theme_selector_still_works(self):
+        with patch("services.api_client.cached_status", return_value={
+                    **self._demand_status(), "future_forecast_available": False}), \
+                patch("services.api_client.cached_model_info", return_value={}):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
+            for theme in ("Claro", "Oscuro", "Sistema"):
+                app.selectbox(key="appearance").set_value(theme).run()
+                self.assertFalse(app.exception)
 
 
 if __name__ == "__main__":

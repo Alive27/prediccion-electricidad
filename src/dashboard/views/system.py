@@ -100,3 +100,25 @@ def render(datasets: dict) -> None:
                    "se consulta por separado en REData.")
     else:
         st.caption("No se encontró el archivo histórico local de 2024 en este entorno.")
+
+    section("Modelo de precios", "Artefacto independiente de la demanda y de ESIOS.")
+    try:
+        price_status = api_client.cached_price_model()
+    except (requests.RequestException, ValueError) as error:
+        status_row("API de precios", "No disponible", "error")
+        st.caption(f"No se pudo consultar el estado del modelo de precios: "
+                   f"{type(error).__name__}.")
+    else:
+        price_model = price_status.get("model", {})
+        loaded = price_status.get("loaded", False)
+        status_row("Artefacto de precios",
+                   price_model.get("model_type", "Cargado") if loaded else "No cargado",
+                   "success" if loaded else "error")
+        if loaded:
+            st.caption(
+                f"Variables: {', '.join(price_model.get('features', []))} · "
+                f"unidad: {price_model.get('unit', '—')} · "
+                f"zona futura: {price_model.get('timezone_convention', '—')}"
+            )
+        elif price_status.get("error"):
+            st.error(f"Error del modelo de precios: {price_status['error']}")
