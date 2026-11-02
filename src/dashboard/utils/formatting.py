@@ -34,6 +34,14 @@ def timestamp(value: pd.Timestamp, with_zone: bool = False) -> str:
     return value.strftime("%d/%m/%Y · %H:%M" + suffix)
 
 
+def local_datetime(value: str | pd.Timestamp) -> str:
+    """Spanish date and peninsular time, e.g. "30/10/2026 23:00" (UTC if naive)."""
+    stamp = pd.Timestamp(value)
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("UTC")
+    return stamp.tz_convert(LOCAL_TZ).strftime("%d/%m/%Y %H:%M")
+
+
 def date_range(frame: pd.DataFrame) -> str:
     if frame.empty:
         return "Sin datos en este periodo"

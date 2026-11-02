@@ -12,7 +12,9 @@ from components.forecast import (
     LOCAL_ZONE, is_current, prediction_frame, render_summary, render_timeline,
 )
 from components.layout import header, section
+from components.run_panel import generation_notice, pending, run_panel, status_chips
 from services import api_client
+from utils.formatting import number, timestamp
 
 
 def _error_detail(error: requests.HTTPError) -> str:
@@ -21,6 +23,26 @@ def _error_detail(error: requests.HTTPError) -> str:
         return str(response.get("detail", response))[:400]
     except (ValueError, AttributeError):
         return str(error)[:400]
+
+
+def _status_chips(model: dict, status: dict, stale: bool) -> None:
+    """Loaded model, last real observation and its freshness."""
+    value = status.get("last_demand_mw")
+    age = status.get("last_demand_age_hours")
+    limit = status.get("freshness_limit_hours")
+    observed = status.get("last_demand_utc")
+    observed = (timestamp(pd.Timestamp(observed).tz_convert(LOCAL_ZONE), with_zone=True)
+                if observed else "sin datos")
+    status_chips([
+        ("success" if status.get("model_loaded") else "error", "Modelo",
+         model.get("model_type", "no disponible")),
+        ("", "Artefacto", model.get("artifact_version", "no identificado")),
+        ("", "Última observación",
+         f"{number(value)} MW · {observed}" if value is not None else observed),
+        ("warning" if stale else "success", "Antigüedad",
+         (f"{number(age, 1)} h" if age is not None else "sin dato")
+         + (f" · límite {number(limit)} h" if limit is not None else "")),
+    ])
 
 
 def _hourly_profile(frame: pd.DataFrame, simulation: bool = False) -> None:
@@ -149,73 +171,59 @@ def render(datasets: dict) -> None:
     except (requests.RequestException, ValueError):
         model = {}
 
-    st.caption(f"Modelo cargado: {model.get('model_type', 'no disponible')} · "
-               f"artefacto {model.get('artifact_version', 'no identificado')}.")
+    stale = not status.get("demand_fresh")
+    _status_chips(model, status, stale)
     if status.get("source_notice"):
         st.warning(status["source_notice"])
-    stale = not status.get("demand_fresh")
-    last_value = status.get("last_demand_mw")
-    last_label = f"{last_value:,.0f} MW" if last_value is not None else "sin valor"
-    st.caption(f"Última observación real: {status.get('last_demand_utc') or 'sin datos'} · "
-               f"{last_label} · antigüedad {status.get('last_demand_age_hours', 'sin dato')} h")
     if stale:
         st.warning(status.get("reason") or "El dato real está fuera del límite de frescura.")
-        st.info("Puedes pedir una simulación desde ese instante si hay suficientes datos "
-                "y temperaturas históricas. No representa las próximas 48 horas actuales.")
     elif not status.get("future_forecast_available"):
         st.warning(status.get("reason") or "Faltan entradas para una previsión de 48 horas.")
 
-    horizon = st.select_slider("Horizonte de predicción", options=[6, 12, 24, 48],
-                               value=48, format_func=lambda value: f"{value} horas",
-                               key="prediction_horizon")
-    st.caption(
-        f"Se solicitarán {horizon} predicciones horarias al modelo; "
-        "resolución de salida: 1 hora.")
-
-    forecast = st.session_state.get("demand_forecast")
     latest_observation = status.get("last_demand_utc")
-    if forecast and not is_current(forecast, latest_observation):
-        st.session_state.pop("demand_forecast", None)
-        forecast = None
-    confirm_simulation = False
-    if stale and status.get("historical_simulation_available"):
-        confirm_simulation = st.checkbox(
-            "Confirmo que quiero una simulación histórica, no una previsión actual.",
-            key="confirm_historical_simulation")
     can_generate = bool(status.get("model_loaded") and (
         status.get("historical_simulation_available") if stale
         else status.get("future_forecast_available")))
-    if st.button(f"Generar simulación histórica {horizon} h" if stale
-                 else f"Generar previsión {horizon} h",
-                 type="primary", icon=":material/bolt:",
-                 disabled=not can_generate or (stale and not confirm_simulation),
-                 key="prediction_generate"):
+    horizon, generate, confirm_simulation = run_panel(
+        "prediction",
+        "Simulación histórica recursiva desde la última observación real; no representa "
+        "las próximas horas." if stale else "Previsión horaria desde la última observación real.",
+        "Generar simulación histórica" if stale else "Generar previsión",
+        enabled=can_generate,
+        confirm=("Confirmo que quiero una simulación histórica, no una previsión actual."
+                 if stale and status.get("historical_simulation_available") else None),
+    )
+    if generate:
         try:
             with st.spinner(f"Calculando {horizon} horas…"):
                 forecast = api_client.post("/predict", {
                     "horizon_hours": horizon,
                     "allow_stale_simulation": bool(stale and confirm_simulation),
                 })
-            st.session_state["demand_forecast"] = forecast
+            # Own key: the summary page keeps its 48 h city profile separately.
+            st.session_state["model_demand_forecast"] = forecast
         except requests.HTTPError as error:
             st.error(f"La API no aceptó la solicitud: {_error_detail(error)}")
         except requests.RequestException as error:
             st.error(f"No se pudo solicitar la previsión ({type(error).__name__}).")
 
-    forecast = st.session_state.get("demand_forecast")
-    if (not forecast or not is_current(forecast, latest_observation)
-            or forecast.get("horizon_hours") != horizon):
+    # The last generation persists for the whole browser session.
+    forecast = st.session_state.get("model_demand_forecast")
+    if not forecast:
         if stale and not status.get("historical_simulation_available"):
             st.info(status.get("reason") or "No hay suficientes entradas históricas para simular.")
         elif not stale and not status.get("future_forecast_available"):
             st.info(status.get("reason") or "Faltan entradas para la previsión actual.")
         else:
-            st.info(f"Genera una previsión de {horizon} horas basada en los datos disponibles.")
+            pending(horizon, "la simulación histórica" if stale else "la demanda")
         return
     frame = prediction_frame(forecast)
-    if len(frame) != horizon:
+    shown = int(forecast.get("horizon_hours") or len(frame))
+    generation_notice(shown, horizon, forecast.get("generated_at_utc"),
+                      outdated=not is_current(forecast, latest_observation))
+    if len(frame) != shown:
         st.error(
-            f"La API no devolvió {horizon} horas completas. "
+            f"La API no devolvió {shown} horas completas. "
             "No se presentan resúmenes parciales.")
         return
 

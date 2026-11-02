@@ -29,3 +29,11 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Ciudad 3D: recursos locales para regenerarla en Blender (ver blender/README.md)
+src/dashboard/kenney_city-kit-*/
+blender/*.blend
+blender/*.blend1
+blender/renders/
+blender/model_audit.json
+blender/validation_report.json

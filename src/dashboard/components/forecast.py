@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from components.charts import base_figure, show as show_chart
+from utils.formatting import number
 
 
 LOCAL_ZONE = "Europe/Madrid"
@@ -34,11 +35,11 @@ def render_summary(forecast: dict, frame: pd.DataFrame) -> None:
     cols = st.columns(5)
     simulation = forecast.get("prediction_mode") == "historical_simulation"
     mode_label = "Simulación" if simulation else "Previsto"
-    cols[0].metric(f"Máximo {mode_label.lower()}", f"{peak.demand_mw:,.0f} MW",
+    cols[0].metric(f"Máximo {mode_label.lower()}", f"{number(peak.demand_mw)} MW",
                    peak.timestamp_local.strftime("%d/%m %H:%M · hora local"))
-    cols[1].metric(f"Mínimo {mode_label.lower()}", f"{valley.demand_mw:,.0f} MW",
+    cols[1].metric(f"Mínimo {mode_label.lower()}", f"{number(valley.demand_mw)} MW",
                    valley.timestamp_local.strftime("%d/%m %H:%M · hora local"))
-    cols[2].metric(f"Rango {mode_label.lower()}", f"{peak.demand_mw - valley.demand_mw:,.0f} MW",
+    cols[2].metric(f"Rango {mode_label.lower()}", f"{number(peak.demand_mw - valley.demand_mw)} MW",
                    "máximo menos mínimo")
     cols[3].metric("Referencia de simulación" if simulation else "Origen real",
                    origin.strftime("%d/%m %H:%M"), "Europe/Madrid")

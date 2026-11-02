@@ -1,130 +1,149 @@
-"""Executive demand and 48-hour forecast overview."""
+"""Executive dashboard overview and the live-data-driven 3D city."""
 
 import pandas as pd
 import requests
 import streamlit as st
 
-from components.forecast import (
-    LOCAL_ZONE, is_current, prediction_frame, render_timeline,
-)
-from components.layout import header, section
+from components.city_scene import render_city
+from components.forecast import is_current
+from components.layout import header
 from services import api_client
-from utils.formatting import number
+from utils.formatting import local_datetime
 
 
-def _local_time(value: str | None) -> str:
-    if not value:
-        return "Sin dato"
-    stamp = pd.Timestamp(value)
-    if stamp.tzinfo is None:
-        stamp = stamp.tz_localize("UTC")
-    return stamp.tz_convert(LOCAL_ZONE).strftime("%d/%m/%Y %H:%M %Z")
-
-
-def _request_forecast() -> None:
-    st.session_state["demand_forecast_attempted"] = True
+def _latest_price() -> dict:
+    """Return the latest observed PVPC point; never substitute a model estimate."""
     try:
-        with st.spinner("Calculando la previsión de demanda de las próximas 48 horas…"):
-            forecast = api_client.post("/predict", {"horizon_hours": 48})
-        st.session_state["demand_forecast"] = forecast
+        response = api_client.cached_price_history(1)
+    except (requests.RequestException, ValueError):
+        return {}
+    records = response.get("records", [])
+    if not records:
+        return response
+    frame = pd.DataFrame(records)
+    frame["timestamp_utc"] = pd.to_datetime(frame.timestamp_utc, utc=True, errors="coerce")
+    frame["price_eur_mwh"] = pd.to_numeric(frame.price_eur_mwh, errors="coerce")
+    frame = frame.dropna(subset=["timestamp_utc", "price_eur_mwh"])
+    if frame.empty:
+        return response
+    point = frame.sort_values("timestamp_utc").iloc[-1]
+    return {
+        **response,
+        "latest_price_eur_mwh": float(point.price_eur_mwh),
+        "latest_price_utc": point.timestamp_utc.isoformat(),
+    }
+
+
+def _price_estimate() -> dict:
+    """Use the independent calendar model if the observed price is unavailable."""
+    saved = st.session_state.get("overview_price_estimate")
+    if saved:
+        generated = pd.Timestamp(saved.get("generated_at_utc"))
+        if pd.Timestamp.now(tz="UTC") - generated.tz_convert("UTC") < pd.Timedelta(hours=1):
+            return saved
+    try:
+        estimate = api_client.predict_price(24)
+        st.session_state["overview_price_estimate"] = estimate
+        return estimate
     except requests.HTTPError as error:
         detail = error.response.text if error.response is not None else str(error)
-        st.error(f"La API no pudo generar la previsión: {detail[:400]}")
+        st.warning(f"Estimación de precio no disponible: {detail[:320]}")
     except requests.RequestException as error:
-        st.error(f"No se pudo solicitar la previsión ({type(error).__name__}).")
+        st.warning(f"No se pudo consultar el modelo de precios ({type(error).__name__}).")
+    return {}
+
+
+def _demand_forecast(status: dict) -> dict:
+    saved = st.session_state.get("overview_demand_forecast")
+    latest = status.get("last_demand_utc")
+    if saved and is_current(saved, latest) and saved.get("horizon_hours") == 48:
+        return saved
+    st.session_state.pop("overview_demand_forecast", None)
+    if not status.get("future_forecast_available"):
+        return {}
+    try:
+        with st.spinner("Calculando el perfil previsto para la ciudad…"):
+            forecast = api_client.post("/predict", {"horizon_hours": 48})
+        st.session_state["overview_demand_forecast"] = forecast
+        return forecast
+    except requests.HTTPError as error:
+        detail = error.response.text if error.response is not None else str(error)
+        st.warning(f"Previsión de demanda no disponible: {detail[:320]}")
+    except requests.RequestException as error:
+        st.warning(f"No se pudo consultar la previsión de demanda ({type(error).__name__}).")
+    return {}
 
 
 def render(datasets: dict) -> None:
-    header("Demanda eléctrica peninsular", "Demanda real de REData y previsión horaria a 48 horas")
+    header(
+        "Centro de control energético",
+        "Demanda agregada peninsular, datos observados y modelos en una vista interactiva.",
+    )
     try:
         status = api_client.cached_status()
     except (requests.RequestException, ValueError) as error:
+        status = {}
         st.error(f"No se puede consultar FastAPI ({type(error).__name__}).")
-        st.caption(f"API configurada: {api_client.BASE_URL}")
-        return
-    try:
-        model = api_client.cached_model_info()
-    except (requests.RequestException, ValueError):
-        model = {}
 
-    latest = status.get("last_demand_mw")
-    current_value = f"{number(latest, 0)} MW" if latest is not None else "Sin dato"
-    previous_delta = status.get("demand_delta_mw")
-    delta_value = (f"{previous_delta:+,.0f} MW" if previous_delta is not None
-                   else "Sin hora comparable")
-    source_state = status.get("demand_source_status", "unavailable")
-    source_label = "Conectada" if source_state == "connected" else "No disponible"
-
-    section("Situación actual", "Solo observaciones reales publicadas por REData.")
-    cards = st.columns(4)
-    cards[0].metric("Última demanda real", current_value,
-                    _local_time(status.get("last_demand_utc")))
-    cards[1].metric("Variación última hora", delta_value,
-                    (f"Respecto a {_local_time(status.get('previous_demand_utc'))}"
-                     if previous_delta is not None else "Sin comparación horaria válida"))
-    cards[2].metric("Fuente REData", source_label,
-                    f"Consultada {_local_time(status.get('demand_source_checked_at_utc'))}")
-    cards[3].metric("Disponibilidad modelo", "Lista" if status.get(
-        "future_forecast_available") else "Bloqueada",
-        model.get("model_type", "Modelo no cargado") if status.get("model_loaded")
-        else "Artefacto no disponible")
-    st.caption(f"Última consulta correcta REData: "
-               f"{_local_time(status.get('demand_source_last_success_at_utc'))} · "
-               f"last-update indicado por la fuente: "
-               f"{_local_time(status.get('demand_source_updated_at_utc'))} · "
-               f"último intento: {_local_time(status.get('demand_source_checked_at_utc'))}.")
-
-    if status.get("source_notice"):
-        st.warning(status["source_notice"])
-    if not status.get("demand_fresh"):
-        st.warning(status.get("reason") or "El dato real está fuera del límite de frescura.")
-    elif not status.get("future_forecast_available"):
-        st.warning(status.get("reason") or "Faltan entradas para la previsión de 48 horas.")
-
-    forecast = st.session_state.get("demand_forecast")
-    last_observation = status.get("last_demand_utc")
-    if forecast and (forecast.get("prediction_mode") == "historical_simulation"
-                     or not is_current(forecast, last_observation)):
-        if forecast.get("prediction_mode") != "historical_simulation":
-            st.session_state.pop("demand_forecast", None)
-        forecast = None
-    button = st.button(
-        "Actualizar previsión 48 h", type="primary", icon=":material/refresh:",
-        disabled=not status.get("future_forecast_available"), key="overview_generate",
-    )
-    auto_generate = (forecast is None and not st.session_state.get(
-        "demand_forecast_attempted") and status.get("future_forecast_available"))
-    if button or auto_generate:
-        _request_forecast()
-        forecast = st.session_state.get("demand_forecast")
-
-    section("Previsión de demanda", "Estimación futura separada del último valor observado · MW")
-    if forecast and is_current(forecast, last_observation):
-        frame = prediction_frame(forecast)
-        if len(frame) == 48:
-            peak = frame.loc[frame.demand_mw.idxmax()]
-            valley = frame.loc[frame.demand_mw.idxmin()]
-            summary = st.columns(2)
-            summary[0].metric(
-                "Máximo previsto · próximas 48 h", f"{peak.demand_mw:,.0f} MW",
-                peak.timestamp_local.strftime("%d/%m %H:%M · Europe/Madrid"),
-            )
-            summary[1].metric(
-                "Mínimo previsto · próximas 48 h", f"{valley.demand_mw:,.0f} MW",
-                valley.timestamp_local.strftime("%d/%m %H:%M · Europe/Madrid"),
-            )
-            st.caption(f"Generada {_local_time(forecast.get('generated_at_utc'))} · "
-                       f"modelo {forecast.get('model', 'no identificado')} · "
-                       f"origen real {_local_time(forecast.get('forecast_origin_utc'))}.")
-            try:
-                history = api_client.cached_history(168)["records"]
-                render_timeline(history, forecast, frame, "overview_forecast")
-            except requests.RequestException as error:
-                st.info(f"Histórico reciente no disponible ({type(error).__name__}).")
-            if st.button("Abrir análisis del modelo", key="overview_details"):
-                st.session_state["current_page"] = "Modelo"
-                st.rerun()
-        else:
-            st.warning("La API no devolvió 48 horas completas; no se resumen valores parciales.")
+    forecast = _demand_forecast(status) if status else {}
+    price = _latest_price()
+    latest_observation = status.get("last_demand_utc")
+    freshness = "Actualizados" if status.get("demand_fresh") else (
+        "Desactualizados" if latest_observation else "Sin observación")
+    source = status.get("demand_source_status", "unavailable")
+    source_text = "REData conectada" if source == "connected" else "REData no disponible"
+    if status.get("model_ready"):
+        model_text = "Modelo listo"
+    elif status.get("model_loaded"):
+        model_text = "Modelo cargado · datos insuficientes"
     else:
-        st.info("La previsión aparecerá cuando REData y las entradas del modelo estén listas.")
+        model_text = "Modelo no disponible"
+    api_text = "API operativa" if status.get("api") else "API no disponible"
+    metrics = {
+        **status,
+        "api_state": f"{api_text} · {model_text}",
+        "freshness": freshness,
+        "source_label": source_text,
+        "latest_price_eur_mwh": price.get("latest_price_eur_mwh"),
+        "latest_price_utc": price.get("latest_price_utc")
+        or price.get("last_observation_utc"),
+        "price_stale": price.get("stale", False),
+    }
+    if (price.get("stale") or price.get("latest_price_eur_mwh") is None
+            or price.get("status") in {"not_configured", "unavailable"}):
+        estimate = _price_estimate()
+        records = estimate.get("records", [])
+        if records:
+            metrics["estimated_price_eur_mwh"] = records[0].get("price_eur_mwh")
+            metrics["estimated_price_utc"] = records[0].get("timestamp_local")
+
+    render_city(metrics, forecast)
+    st.markdown(
+        '<div class="energy-city-caption"><span>La intensidad luminosa sigue la demanda '
+        'agregada observada y su perfil previsto; no asigna consumo individual a edificios.</span>'
+        f'<span>{source_text} · {freshness}</span></div>',
+        unsafe_allow_html=True,
+    )
+    if latest_observation and not status.get("demand_fresh"):
+        st.warning(
+            f"La última observación de demanda es del {local_datetime(latest_observation)} "
+            "(hora peninsular). "
+            "La fuente o el dato pueden estar desactualizados; la ciudad conserva el contexto "
+            "real y no lo presenta como una medición actual."
+        )
+    if status.get("source_notice"):
+        st.info(status["source_notice"])
+    if status and not status.get("future_forecast_available"):
+        st.caption(
+            status.get("reason")
+            or "La previsión no está disponible con las entradas actuales."
+        )
+    if price.get("status") == "not_configured":
+        st.caption("No se ha configurado una fuente PVPC observada; la tarjeta muestra la "
+                   "estimación del modelo de calendario como dato distinto.")
+    elif price.get("stale"):
+        st.caption(f"PVPC observado desactualizado desde {price.get('last_observation_utc')}; "
+                   "la tarjeta muestra la estimación del modelo, no ese dato antiguo.")
+    elif price.get("status") == "unavailable":
+        st.caption(f"Fuente PVPC no disponible: {price.get('error') or 'sin detalle'}. "
+                   "La tarjeta de precio, si está disponible, corresponde al modelo.")
