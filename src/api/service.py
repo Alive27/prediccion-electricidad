@@ -735,6 +735,23 @@ class DemandService:
             if live.empty:
                 raise DataUnavailable("Open-Meteo no devolvió temperaturas válidas.")
             result = self._clean_weather(pd.concat([local, live], ignore_index=True))
+            # Open-Meteo forecast can contain null historical hours. Fill only those
+            # timestamps with measured archive reanalysis; never interpolate values.
+            recent_demand = self.demand_data().tail(168)
+            if len(recent_demand) == 168:
+                aligned_count = recent_demand.merge(
+                    result, on="timestamp_utc", how="inner").timestamp_utc.nunique()
+                if aligned_count < 168:
+                    try:
+                        archived = self.archived_weather(
+                            recent_demand.timestamp_utc.iloc[0],
+                            recent_demand.timestamp_utc.iloc[-1],
+                        )
+                        result = self._clean_weather(pd.concat(
+                            [result, archived], ignore_index=True))
+                    except (requests.RequestException, DataUnavailable, ValueError) as error:
+                        LOGGER.warning("No se pudieron recuperar horas meteorológicas reales "
+                                       "desde Archive (%s).", type(error).__name__)
             self._weather_cache = result
             self.weather_source_status = "connected"
             self.weather_source_error = None

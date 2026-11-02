@@ -11,8 +11,9 @@ from services.data_quality import Dataset
 
 
 def empty(title: str, detail: str, icon: str = "database", flow: bool = False) -> None:
-    steps = ('<div class="prediction-flow"><span>Modelo</span><span aria-hidden="true">→</span>'
-             '<span>API</span><span aria-hidden="true">→</span><span>Predicción 24 h</span>'
+    arrow = f'<span class="flow-arrow">{svg("chevron")}</span>'
+    steps = (f'<div class="prediction-flow"><span>Modelo</span>{arrow}'
+             f'<span>API</span>{arrow}<span>Predicción 24 h</span>'
              '</div>') if flow else ""
     st.markdown(
         f'<div class="empty-state"><span class="empty-icon">{svg(icon)}</span>'

@@ -118,6 +118,27 @@ class DemandServiceTests(unittest.TestCase):
         service.esios_cache_dir = data_dir / "test-esios-cache"
         return service
 
+    def test_weather_archive_recovers_missing_real_hours_for_model_window(self):
+        service = self.make_service()
+        times = pd.date_range("2026-10-23 23:00", periods=168, freq="h", tz="UTC")
+        demand = pd.DataFrame({"timestamp_utc": times, "value": 30_000.0})
+        service.local_weather = lambda: pd.DataFrame(
+            columns=["timestamp_utc", "temperature_2m"])
+        service.demand_data = lambda: demand
+        payload_times = times.delete(list(range(25))).strftime("%Y-%m-%dT%H:%M")
+        response = Mock()
+        response.json.return_value = {"hourly": {
+            "time": payload_times.tolist(),
+            "temperature_2m": [15.0] * len(payload_times),
+        }}
+        response.raise_for_status.return_value = None
+        archive = pd.DataFrame({"timestamp_utc": times, "temperature_2m": 14.0})
+        with patch.object(service.session, "get", return_value=response), \
+                patch.object(service, "archived_weather", return_value=archive) as fetch:
+            weather = service.weather_data()
+        self.assertEqual(demand.merge(weather, on="timestamp_utc").shape[0], 168)
+        fetch.assert_called_once_with(times[0], times[-1])
+
     def test_redata_evolution_uses_peninsular_scope_and_validates_observations(self):
         service = self.make_service()
         now = pd.Timestamp.now(tz="UTC").floor("h")

@@ -101,8 +101,15 @@ class ApiContractTests(unittest.TestCase):
             "/prices/predict", json={"horizon_hours": 5}).status_code, 422)
 
     def test_price_history_period_validation(self):
-        self.assertEqual(self.client.get("/prices/history", params={"days": 8}).status_code,
-                         422)
+        with patch.object(api.app.state.price_service, "history", return_value={
+                "status": "not_configured", "records": []}) as history:
+            response = self.client.get("/prices/history", params={"days": 1})
+        self.assertEqual(response.status_code, 200)
+        history.assert_called_once_with(1)
+        self.assertEqual(self.client.get(
+            "/prices/history", params={"days": 4}).status_code, 422)
+        self.assertEqual(self.client.get(
+            "/prices/history", params={"days": 8}).status_code, 422)
 
     def test_historical_evaluation_uses_real_model(self):
         evaluation = self.client.get("/evaluation")

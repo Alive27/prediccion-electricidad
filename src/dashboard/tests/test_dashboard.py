@@ -21,6 +21,7 @@ from services.data_loader import load_local, load_upload, refresh  # noqa: E402
 from services.data_quality import aligned_data, prepare  # noqa: E402
 from utils.paths import FILENAMES, candidate_paths  # noqa: E402
 from views.prices import _frame as price_prediction_frame  # noqa: E402
+from views.prices import best_window, price_bands  # noqa: E402
 
 
 class RealDataTests(unittest.TestCase):
@@ -164,7 +165,8 @@ class ViewTests(unittest.TestCase):
     def _demand_status(self):
         origin = pd.Timestamp.now(tz="UTC").floor("h")
         return {
-            "api": True, "model_loaded": True, "model_schema_valid": True,
+            "api": True, "model_loaded": True, "model_ready": True,
+            "model_schema_valid": True,
             "data_available": True, "last_demand_utc": origin.isoformat(),
             "last_demand_mw": 31_000.0, "demand_delta_mw": 100.0,
             "demand_fresh": True, "demand_source_status": "connected",
@@ -185,23 +187,29 @@ class ViewTests(unittest.TestCase):
             ],
         }
 
-    def test_dashboard_summary_shows_consumption_forecast_and_keeps_prices_separate(self):
+    def test_dashboard_summary_uses_api_and_embeds_the_3d_city(self):
         with patch("services.api_client.cached_status", return_value=self._demand_status()), \
                 patch("services.api_client.cached_model_info", return_value={
                     "model_type": "RandomForestRegressor"}), \
                 patch("services.api_client.post",
                       side_effect=lambda path, body: self._demand_forecast(
                           body["horizon_hours"])) as demand, \
-                patch("services.api_client.cached_history", return_value={"records": []}), \
                 patch("services.api_client.cached_price_history",
-                      side_effect=AssertionError("No debe consultar histórico de precios")):
+                      return_value={"status": "not_configured", "records": []}), \
+                patch("services.api_client.predict_price", return_value={
+                    "generated_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+                    "records": [{"price_eur_mwh": 80.0,
+                                 "timestamp_local": "2026-11-02T10:00:00+01:00"}],
+                }), \
+                patch("components.city_scene.st.iframe") as city:
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
         self.assertFalse(app.exception)
         self.assertEqual(PAGES, ["Resumen", "Modelo", "Precios", "Datos", "Estado del sistema"])
         self.assertEqual(app.session_state["current_page"], "Resumen")
         self.assertEqual(demand.call_args.args[0], "/predict")
-        self.assertGreater(len(app.get("plotly_chart")), 0)
-        self.assertTrue(any("previsión de demanda" in item.value.lower()
+        self.assertEqual(demand.call_args.args[1], {"horizon_hours": 48})
+        self.assertTrue(city.called)
+        self.assertTrue(any("intensidad luminosa" in item.value.lower()
                             for item in app.markdown))
 
     def test_all_price_horizons_refresh_the_model_output(self):
@@ -210,14 +218,72 @@ class ViewTests(unittest.TestCase):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
             app.session_state["current_page"] = "Precios"
             app.run()
+            self.assertEqual(predict.call_count, 0)
+            self.assertEqual(app.button(key="price_generate").label, "Generar previsión 24 h")
             for horizon in (6, 12, 24, 48):
-                app.selectbox(key="pvpc_horizon").set_value(horizon).run()
+                app.selectbox(key="price_horizon").set_value(horizon).run()
+                app.button(key="price_generate").click().run()
                 self.assertFalse(app.exception)
                 self.assertEqual(len(app.get("plotly_chart")), 1)
-                self.assertEqual(len(app.dataframe), 1)
                 self.assertEqual(app.session_state["price_forecast_horizon"], horizon)
-        self.assertEqual([call.args[0] for call in predict.call_args_list],
-                         [24, 6, 12, 24, 48])
+                markup = " ".join(item.value for item in app.markdown)
+                self.assertIn("price-table", markup)
+                self.assertIn("Valle", markup)
+                self.assertIn("Punta", markup)
+                self.assertTrue(any("€/kWh" in metric.value for metric in app.metric))
+        self.assertEqual([call.args[0] for call in predict.call_args_list], [6, 12, 24, 48])
+
+    def test_price_generation_persists_when_switching_pages(self):
+        with patch("services.api_client.predict_price",
+                   side_effect=self._price_forecast) as predict, \
+                patch("services.api_client.cached_price_model",
+                      side_effect=requests.ConnectionError("down")), \
+                patch("services.api_client.cached_status",
+                      side_effect=requests.ConnectionError("down")):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Precios"
+            app.run()
+            app.selectbox(key="price_horizon").set_value(12).run()
+            app.button(key="price_generate").click().run()
+            app.session_state["current_page"] = "Datos"
+            app.run()
+            app.session_state["current_page"] = "Precios"
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertEqual(predict.call_count, 1)
+        self.assertEqual(app.selectbox(key="price_horizon").value, 12)
+        self.assertTrue(any("price-table" in item.value for item in app.markdown))
+
+    def test_demand_generation_persists_after_visiting_the_summary(self):
+        with patch("services.api_client.cached_status", return_value=self._demand_status()), \
+                patch("services.api_client.cached_model_info", return_value={
+                    "model_type": "RandomForestRegressor"}), \
+                patch("services.api_client.post",
+                      side_effect=lambda path, body: self._demand_forecast(
+                          body["horizon_hours"])), \
+                patch("services.api_client.cached_history", return_value={"records": []}), \
+                patch("services.api_client.cached_curves", return_value={"curves": {}}), \
+                patch("services.api_client.cached_history_between",
+                      return_value={"records": []}), \
+                patch("services.api_client.cached_price_history",
+                      return_value={"status": "not_configured", "records": []}), \
+                patch("services.api_client.predict_price",
+                      side_effect=self._price_forecast), \
+                patch("components.city_scene.st.iframe"):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Modelo"
+            app.run()
+            app.selectbox(key="prediction_horizon").set_value(12).run()
+            app.button(key="prediction_generate").click().run()
+            app.session_state["current_page"] = "Resumen"
+            app.run()
+            app.session_state["current_page"] = "Modelo"
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state["model_demand_forecast"]["horizon_hours"], 12)
+        self.assertEqual(app.session_state["overview_demand_forecast"]["horizon_hours"], 48)
+        self.assertEqual(app.selectbox(key="prediction_horizon").value, 12)
+        self.assertTrue(any("Máximo previsto" in metric.label for metric in app.metric))
 
     def test_legacy_historical_page_selection_returns_to_summary(self):
         with patch("services.api_client.cached_status", return_value={
@@ -236,6 +302,7 @@ class ViewTests(unittest.TestCase):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
             app.session_state["current_page"] = "Precios"
             app.run()
+            app.button(key="price_generate").click().run()
         self.assertFalse(app.exception)
         self.assertTrue(any("No se pudo ejecutar el modelo" in item.value
                             for item in app.error))
@@ -256,9 +323,9 @@ class ViewTests(unittest.TestCase):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
             app.session_state["current_page"] = "Modelo"
             app.run()
-            self.assertEqual(app.select_slider(key="prediction_horizon").options,
+            self.assertEqual(app.selectbox(key="prediction_horizon").options,
                              ["6 horas", "12 horas", "24 horas", "48 horas"])
-            app.select_slider(key="prediction_horizon").set_value(6).run()
+            app.selectbox(key="prediction_horizon").set_value(6).run()
             app.button(key="prediction_generate").click().run()
         self.assertEqual(app.session_state["prediction_horizon"], 6)
         self.assertFalse(app.exception)
@@ -291,6 +358,28 @@ class ViewTests(unittest.TestCase):
             for theme in ("Claro", "Oscuro", "Sistema"):
                 app.selectbox(key="appearance").set_value(theme).run()
                 self.assertFalse(app.exception)
+
+
+class PriceBandTests(unittest.TestCase):
+    def test_prices_are_shown_per_kwh_and_split_in_relative_bands(self):
+        stamps = pd.date_range("2026-11-03", periods=6, freq="h", tz="UTC")
+        frame = price_bands(pd.DataFrame({
+            "timestamp_utc": stamps, "price_eur_mwh": [120, 80, 60, 70, 150, 200]}))
+        self.assertAlmostEqual(frame.price_eur_kwh.iloc[0], 0.12)
+        self.assertEqual(list(frame.band), ["llano", "llano", "valle", "valle", "punta", "punta"])
+        cheapest = best_window(frame, 2)
+        self.assertEqual(list(cheapest.price_eur_mwh), [60, 70])
+        self.assertEqual(list(best_window(frame, 2, cheapest=False).price_eur_mwh), [150, 200])
+
+
+class NoEmojiTests(unittest.TestCase):
+    def test_interface_uses_svg_icons_instead_of_emoji_or_arrow_glyphs(self):
+        glyphs = set("←↑→↓✓✔✕✖⚡⬆⬇")
+        for path in [*DIRECTORY.glob("views/*.py"), *DIRECTORY.glob("components/*.py"),
+                     *DIRECTORY.glob("static/city/*.js"), DIRECTORY / "static/city/index.html"]:
+            text = path.read_text(encoding="utf-8")
+            found = {char for char in text if char in glyphs or ord(char) >= 0x1F300}
+            self.assertFalse(found, f"{path.name}: {found}")
 
 
 if __name__ == "__main__":

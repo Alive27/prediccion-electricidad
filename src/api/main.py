@@ -160,7 +160,9 @@ def evaluation():
 
 
 @app.get("/prices/history")
-def price_history(days: Literal[1, 2, 3, 7] = 1):
+def price_history(days: int = Query(default=1, ge=1, le=7)):
+    if days not in (1, 2, 3, 7):
+        raise HTTPException(status_code=422, detail="El periodo debe ser 1, 2, 3 o 7 días.")
     return app.state.price_service.history(days)
 
 

@@ -1,0 +1,145 @@
+{
+ "version": 1,
+ "units": "Three.js world units (glTF metres), y up",
+ "terrain": {
+  "size": 64,
+  "half": 32
+ },
+ "camera": {
+  "target": [
+   0,
+   1.2,
+   0
+  ],
+  "direction": [
+   1,
+   0.85,
+   1.05
+  ]
+ },
+ "glowMaterials": [
+  "city_glow"
+ ],
+ "energyRoutes": {
+  "centro": [
+   [
+    16.2,
+    21.6
+   ],
+   [
+    16.2,
+    0.0
+   ],
+   [
+    0.0,
+    0.0
+   ]
+  ],
+  "residencial_oeste": [
+   [
+    16.2,
+    21.6
+   ],
+   [
+    16.2,
+    0.0
+   ],
+   [
+    -21.6,
+    0.0
+   ]
+  ],
+  "residencial_norte": [
+   [
+    16.2,
+    21.6
+   ],
+   [
+    16.2,
+    -16.2
+   ],
+   [
+    12.6,
+    -16.2
+   ],
+   [
+    12.6,
+    -27.0
+   ]
+  ],
+  "industrial": [
+   [
+    16.2,
+    21.6
+   ],
+   [
+    16.2,
+    16.2
+   ],
+   [
+    21.6,
+    16.2
+   ]
+  ],
+  "plaza": [
+   [
+    16.2,
+    21.6
+   ],
+   [
+    16.2,
+    0.0
+   ],
+   [
+    9.0,
+    0.0
+   ],
+   [
+    9.0,
+    -9.0
+   ],
+   [
+    -7.2,
+    -9.0
+   ]
+  ],
+  "noreste": [
+   [
+    16.2,
+    21.6
+   ],
+   [
+    16.2,
+    0.0
+   ],
+   [
+    27.0,
+    0.0
+   ],
+   [
+    27.0,
+    -9.0
+   ]
+  ]
+ },
+ "stats": {
+  "triangles": 379102,
+  "uniqueMeshes": 127,
+  "objects": 1385,
+  "roads": {
+   "road-bend": 8,
+   "road-straight": 268,
+   "road-intersection": 17,
+   "road-end-round": 3,
+   "road-crossroad": 10,
+   "road-crossing": 12,
+   "road-driveway-single": 5
+  },
+  "furniture": {
+   "lamps": 81,
+   "street_trees": 8,
+   "traffic_lights": 28,
+   "outskirts_trees": 226
+  }
+ }
+}
