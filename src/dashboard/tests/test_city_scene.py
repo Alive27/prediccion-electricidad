@@ -62,7 +62,6 @@ class CitySceneTests(unittest.TestCase):
         self.assertNotIn("RESIDENCIAL", page)
         self.assertNotIn('class="zones"', page)
 
-
     def test_blender_city_glb_is_self_contained_and_loaded_by_the_scene(self):
         city_dir = DIRECTORY / "static" / "city"
         data = (city_dir / "energy_city.glb").read_bytes()

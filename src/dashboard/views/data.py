@@ -93,7 +93,10 @@ def _live_panel(status: dict) -> None:
     value = status.get("last_demand_mw")
     rows = [
         ("Última consulta correcta", _local_time(status.get("demand_source_last_success_at_utc"))),
-        ("Actualización indicada por REData", _local_time(status.get("demand_source_updated_at_utc"))),
+        (
+            "Actualización indicada por REData",
+            _local_time(status.get("demand_source_updated_at_utc")),
+        ),
         ("Último intento de consulta", _local_time(status.get("demand_source_checked_at_utc"))),
     ]
     kv = "".join(f'<div class="kv"><span>{escape(k)}</span><strong>{escape(v)}</strong></div>'
