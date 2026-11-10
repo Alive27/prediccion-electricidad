@@ -8,9 +8,18 @@ Requiere que el esquema de schema_bbdd.sql ya esté creado.
 
 Uso:
     python load_to_db.py
+
+Ficheros de entrada (en data/raw/). Para cada uno se usa, por este orden:
+  1. La ruta indicada en la variable de entorno (o en el .env):
+     RUTA_DEMANDA, RUTA_METEO, RUTA_PRECIO.
+  2. El histórico 2023-2025, si se ha generado con tests/probar_*.py.
+  3. El fichero de 2024 versionado en el repositorio (demanda y meteorología).
+El precio no se versiona: si no existe su fichero, se omite con un aviso.
 """
 
 import os
+from pathlib import Path
+
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
@@ -22,9 +31,45 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Ejemplo de formato esperado en el .env:
 # DATABASE_URL=postgresql://usuario:password@localhost:5432/nombre_bd
 
-RUTA_DEMANDA = "data/raw/redata_demanda_2023_2025.parquet"
-RUTA_PRECIO = "data/raw/esios_precio_2023_2025.parquet"
-RUTA_METEO = "data/raw/openmeteo_madrid_2023_2025.parquet"
+DATOS = Path(__file__).resolve().parent / "data" / "raw"
+
+
+def resolver_ruta(variable, candidatos, generador, obligatorio=True):
+    """
+    Devuelve la ruta del fichero a cargar: la de la variable de entorno si
+    está definida o, si no, el primer candidato que exista en data/raw/.
+    Si falta un fichero obligatorio, explica cuál y cómo generarlo.
+    """
+    indicada = os.getenv(variable)
+    rutas = [Path(indicada)] if indicada else [DATOS / nombre for nombre in candidatos]
+    for ruta in rutas:
+        if ruta.is_file():
+            return ruta
+    if not obligatorio:
+        return None
+    buscadas = "\n".join(f"  - {ruta}" for ruta in rutas)
+    raise FileNotFoundError(
+        f"No se encontró el fichero de datos ({variable}). Rutas comprobadas:\n"
+        f"{buscadas}\n"
+        f"Genéralo con tests/{generador} (ejecutado desde tests/) o indica otra "
+        f"ruta en la variable de entorno {variable}."
+    )
+
+
+RUTA_DEMANDA = resolver_ruta(
+    "RUTA_DEMANDA",
+    ["redata_demanda_2023_2025.parquet", "redata_demanda_2024.parquet"],
+    "probar_redata.py",
+)
+RUTA_METEO = resolver_ruta(
+    "RUTA_METEO",
+    ["openmeteo_madrid_2023_2025.parquet", "openmeteo_madrid_2024.parquet"],
+    "probar_openmeteo.py",
+)
+RUTA_PRECIO = resolver_ruta(
+    "RUTA_PRECIO", ["esios_precio_2023_2025.parquet"], "probar_esios.py",
+    obligatorio=False,
+)
 CIUDAD_METEO = "madrid"
 
 
@@ -68,8 +113,9 @@ def cargar_precio(conn):
     electricity_demand para las horas que ya existen (por eso usa
     UPDATE y no INSERT: la fila la crea cargar_demanda()).
     """
-    if not os.path.exists(RUTA_PRECIO):
-        print(f"Aviso: no se encontró {RUTA_PRECIO}, se omite la carga de precio.")
+    if RUTA_PRECIO is None:
+        print("Aviso: no hay fichero de precio (se genera con tests/probar_esios.py, "
+              "que requiere ESIOS_TOKEN); se omite la carga de precio.")
         return
 
     print(f"Leyendo {RUTA_PRECIO} ...")
