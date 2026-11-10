@@ -76,7 +76,7 @@ class ContainerPathsTests(unittest.TestCase):
         with patch("utils.paths.__file__", "/app/utils/paths.py"):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
             self.assertEqual(len(app.get("file_uploader")), 0)
-            app.sidebar.button(key="nav_5").click().run()
+            app.sidebar.button(key="nav_3").click().run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.get("file_uploader")), 1)
 
