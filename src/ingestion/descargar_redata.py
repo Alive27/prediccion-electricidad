@@ -6,14 +6,22 @@ La API devuelve resolución de 5 minutos, así que se agrega a
 horaria antes de guardar. Se pide mes a mes porque el widget no
 admite rangos de un año completo con time_trunc=hour.
 
-Uso:
-    python probar_redata.py
+Uso (desde la raíz del repositorio, con las dependencias de
+requirements-ingesta.txt instaladas):
+    python src/ingestion/descargar_redata.py
+
+El resultado se guarda en data/raw/redata_demanda_2023_2025.parquet.
 """
 
-import requests
-import pandas as pd
 from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import requests
 from dateutil.relativedelta import relativedelta
+
+RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
+RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 url = "https://apidatos.ree.es/es/datos/demanda/demanda-tiempo-real"
 headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -48,4 +56,4 @@ df = df.set_index("datetime").resample("1h").mean(numeric_only=True).reset_index
 
 print(f"\nTotal filas tras agregar a horario: {len(df)}")
 
-df.to_parquet("../data/raw/redata_demanda_2023_2025.parquet", index=False)
+df.to_parquet(RAW_DIR / "redata_demanda_2023_2025.parquet", index=False)

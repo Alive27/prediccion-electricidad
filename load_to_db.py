@@ -12,7 +12,7 @@ Uso:
 Ficheros de entrada (en data/raw/). Para cada uno se usa, por este orden:
   1. La ruta indicada en la variable de entorno (o en el .env):
      RUTA_DEMANDA, RUTA_METEO, RUTA_PRECIO.
-  2. El histórico 2023-2025, si se ha generado con tests/probar_*.py.
+  2. El histórico 2023-2025, si se ha generado con src/ingestion/descargar_*.py.
   3. El fichero de 2024 versionado en el repositorio (demanda y meteorología).
 El precio no se versiona: si no existe su fichero, se omite con un aviso.
 """
@@ -51,7 +51,7 @@ def resolver_ruta(variable, candidatos, generador, obligatorio=True):
     raise FileNotFoundError(
         f"No se encontró el fichero de datos ({variable}). Rutas comprobadas:\n"
         f"{buscadas}\n"
-        f"Genéralo con tests/{generador} (ejecutado desde tests/) o indica otra "
+        f"Genéralo con src/ingestion/{generador} (desde la raíz del repositorio) o indica otra "
         f"ruta en la variable de entorno {variable}."
     )
 
@@ -59,15 +59,15 @@ def resolver_ruta(variable, candidatos, generador, obligatorio=True):
 RUTA_DEMANDA = resolver_ruta(
     "RUTA_DEMANDA",
     ["redata_demanda_2023_2025.parquet", "redata_demanda_2024.parquet"],
-    "probar_redata.py",
+    "descargar_redata.py",
 )
 RUTA_METEO = resolver_ruta(
     "RUTA_METEO",
     ["openmeteo_madrid_2023_2025.parquet", "openmeteo_madrid_2024.parquet"],
-    "probar_openmeteo.py",
+    "descargar_openmeteo.py",
 )
 RUTA_PRECIO = resolver_ruta(
-    "RUTA_PRECIO", ["esios_precio_2023_2025.parquet"], "probar_esios.py",
+    "RUTA_PRECIO", ["esios_precio_2023_2025.parquet"], "descargar_esios.py",
     obligatorio=False,
 )
 CIUDAD_METEO = "madrid"
@@ -114,7 +114,7 @@ def cargar_precio(conn):
     UPDATE y no INSERT: la fila la crea cargar_demanda()).
     """
     if RUTA_PRECIO is None:
-        print("Aviso: no hay fichero de precio (se genera con tests/probar_esios.py, "
+        print("Aviso: no hay fichero de precio (se genera con src/ingestion/descargar_esios.py, "
               "que requiere ESIOS_TOKEN); se omite la carga de precio.")
         return
 

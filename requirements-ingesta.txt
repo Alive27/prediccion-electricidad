@@ -1,4 +1,4 @@
-# Dependencias de load_to_db.py y de los scripts tests/probar_*.py.
+# Dependencias de load_to_db.py y de los scripts src/ingestion/descargar_*.py.
 # No las necesitan la API ni el dashboard (tienen sus propios requirements.txt).
 # Uso: pip install -r requirements-ingesta.txt
 pandas>=2.1,<4
