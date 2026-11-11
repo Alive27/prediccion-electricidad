@@ -6,17 +6,24 @@ Parquet.
 La API de ESIOS limita las peticiones a bloques de unas 3 semanas,
 así que se descarga por tramos y se van concatenando.
 
-Uso:
-    python probar_esios.py
+Uso (desde la raíz del repositorio, con las dependencias de
+requirements-ingesta.txt instaladas y ESIOS_TOKEN en el .env):
+    python src/ingestion/descargar_esios.py
+
+El resultado se guarda en data/raw/esios_precio_2023_2025.parquet.
 """
 
 import os
-import requests
-import pandas as pd
 from datetime import datetime, timedelta
+from pathlib import Path
+
+import pandas as pd
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 
 ESIOS_TOKEN = os.getenv("ESIOS_TOKEN")
 INDICATOR_ID = 600  # Precio mercado SPOT Diario
@@ -91,7 +98,8 @@ def main():
     print(f"Total filas tras agregar a horario: {len(df)}")
     print(df.head())
 
-    df.to_parquet("../data/raw/esios_precio_2023_2025.parquet", index=False)
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(RAW_DIR / "esios_precio_2023_2025.parquet", index=False)
 
 
 if __name__ == "__main__":
