@@ -69,7 +69,18 @@ def _pipeline(status: dict | None, dataset: Dataset) -> None:
     local = (f'<div class="pipe-side"><span class="pipe-icon">{svg("database")}</span>'
              f'<div><strong>Histórico local 2024</strong><small>Parquet REData · '
              f'gráficos históricos</small></div>{_state(state, tone)}</div>')
-    _html(f'<div class="pipeline" role="list">{items}</div>{local}')
+    try:
+        tracking = api_client.cached_tracking(7)
+    except (requests.RequestException, ValueError):
+        tracking = {}
+    db_state = (("Conectada", "success") if tracking.get("available") else
+                ("Sin conexión", "error") if tracking.get("configured") else
+                ("No configurada", ""))
+    database = (f'<div class="pipe-side"><span class="pipe-icon">{svg("server")}</span>'
+                f'<div><strong>Base de datos · Supabase</strong><small>Registro de '
+                f'previsiones del modelo frente a la demanda real</small></div>'
+                f'{_state(*db_state)}</div>')
+    _html(f'<div class="pipeline" role="list">{items}</div>{local}{database}')
 
 
 def _freshness(status: dict) -> str:

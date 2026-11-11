@@ -67,6 +67,26 @@ class ApiContractTests(unittest.TestCase):
         stale = self.client.post("/predict", json={"horizon_hours": 6})
         self.assertEqual(stale.status_code, 503)
 
+    def test_prediction_log_is_optional_and_skips_historical_simulations(self):
+        original = api.app.state.prediction_store
+        try:
+            api.app.state.prediction_store = api.PredictionStore(None)
+            tracking = self.client.get("/predictions/tracking", params={"days": 7})
+            self.assertEqual(tracking.status_code, 200)
+            self.assertFalse(tracking.json()["configured"])
+            # Configured log whose connection must never be opened for a simulation.
+            connections = []
+            api.app.state.prediction_store = api.PredictionStore(
+                "postgresql://user:secret@host/db",
+                connect=lambda: connections.append(1) or self.fail("no debe conectar"))
+            simulation = self.client.post("/predict", json={
+                "horizon_hours": 6, "allow_stale_simulation": True})
+            self.assertEqual(simulation.status_code, 200)
+            self.assertEqual(simulation.json()["prediction_mode"], "historical_simulation")
+            self.assertEqual(connections, [])
+        finally:
+            api.app.state.prediction_store = original
+
     def test_curves_endpoint_reports_missing_esios_credential_without_hiding_it(self):
         self.service.esios_token = ""
         curves = self.client.get("/curves", params={"hours": 24})

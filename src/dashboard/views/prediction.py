@@ -159,6 +159,58 @@ def _hourly_table(frame: pd.DataFrame, simulation: bool = False) -> None:
                  width="stretch", hide_index=True)
 
 
+def _tracking_section(days: int = 7) -> None:
+    """Logged current forecasts against the real demand published afterwards."""
+    section("Seguimiento del modelo",
+            f"Previsiones actuales guardadas en la base de datos frente a la demanda real "
+            f"publicada después por REData · últimos {days} días. Las simulaciones históricas "
+            "no se registran.")
+    try:
+        tracking = api_client.cached_tracking(days)
+    except (requests.RequestException, ValueError) as error:
+        st.info(f"Registro de previsiones no disponible ({type(error).__name__}).")
+        return
+    if not tracking.get("configured"):
+        st.info("Registro de previsiones no configurado: define DATABASE_URL en el .env para "
+                "guardar las previsiones en la base de datos.")
+        return
+    if not tracking.get("available"):
+        st.warning("No se pudo leer el registro de previsiones de la base de datos "
+                   f"({tracking.get('error') or 'sin detalle'}).")
+        return
+    metrics = tracking.get("metrics") or {}
+    records = tracking.get("records", [])
+    mae, mape = metrics.get("mae_mw"), metrics.get("mape_pct")
+    status_chips([
+        ("success", "Base de datos", "conectada"),
+        ("", "Horas registradas", number(tracking.get("stored", 0))),
+        ("", "Horas con dato real", number(metrics.get("compared_hours", 0))),
+        ("", "Error medio (MAE)", f"{number(mae)} MW" if mae is not None else "sin datos"),
+        ("", "Error relativo (MAPE)", f"{number(mape, 1)} %" if mape is not None else "sin datos"),
+    ])
+    if not records:
+        st.info(f"No hay previsiones registradas en los últimos {days} días. Se guardan al "
+                "generar una previsión actual con datos de REData recientes.")
+        return
+    frame = pd.DataFrame(records)
+    frame["local"] = pd.to_datetime(frame.timestamp_utc, utc=True).dt.tz_convert(
+        LOCAL_ZONE).dt.tz_localize(None)
+    figure = charts.base_figure("Demanda · MW", 300)
+    for column, name, color, dash in (("actual_mw", "Demanda real · REData", charts.BLUE, "solid"),
+                                      ("predicted_mw", "Previsión registrada", charts.AMBER,
+                                       "dash")):
+        figure.add_trace(go.Scatter(
+            x=frame.local, y=frame[column], name=name, mode="lines+markers",
+            line={"color": color, "width": 2.2, "dash": dash}, marker={"size": 5},
+            hovertemplate=f"%{{x|%d/%m %H:%M}}<br>{name} · %{{y:,.0f}} MW<extra></extra>"))
+    figure.update_layout(showlegend=True, hovermode="x unified")
+    figure.update_xaxes(title="Hora peninsular")
+    charts.show(figure, "model_tracking")
+    if not metrics:
+        st.caption("La demanda real de estas horas aún no se ha publicado; el error se "
+                   "calculará cuando REData la publique.")
+
+
 def render(datasets: dict) -> None:
     header("Modelo", "Previsión horaria con el modelo existente · 6, 12, 24 o 48 horas")
     try:
@@ -180,6 +232,12 @@ def render(datasets: dict) -> None:
     elif not status.get("future_forecast_available"):
         st.warning(status.get("reason") or "Faltan entradas para una previsión de 48 horas.")
 
+    _forecast_area(status, stale)
+    _tracking_section()
+
+
+def _forecast_area(status: dict, stale: bool) -> None:
+    """Run panel and the results of the last generation of this session."""
     latest_observation = status.get("last_demand_utc")
     can_generate = bool(status.get("model_loaded") and (
         status.get("historical_simulation_available") if stale

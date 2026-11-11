@@ -285,6 +285,41 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(app.selectbox(key="prediction_horizon").value, 12)
         self.assertTrue(any("Máximo previsto" in metric.label for metric in app.metric))
 
+    def test_model_page_tracks_logged_forecasts_against_real_demand(self):
+        origin = pd.Timestamp.now(tz="UTC").floor("h") - pd.Timedelta(hours=2)
+        tracking = {
+            "configured": True, "available": True, "error": None, "stored": 3,
+            "records": [
+                {"timestamp_utc": (origin + pd.Timedelta(hours=step)).isoformat(),
+                 "predicted_mw": 30_000.0 + step, "actual_mw": None if step == 2 else 29_000.0}
+                for step in range(3)],
+            "metrics": {"compared_hours": 2, "mae_mw": 1_000.5, "mape_pct": 3.45},
+        }
+        with patch("services.api_client.cached_status", return_value=self._demand_status()), \
+                patch("services.api_client.cached_model_info", return_value={
+                    "model_type": "RandomForestRegressor"}), \
+                patch("services.api_client.cached_tracking", return_value=tracking):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Modelo"
+            app.run()
+        self.assertFalse(app.exception)
+        markup = " ".join(item.value for item in app.markdown)
+        self.assertIn("Seguimiento del modelo", markup)
+        self.assertIn("1.000 MW", markup)
+        self.assertIn("3,5 %", markup)
+        self.assertEqual(len(app.get("plotly_chart")), 1)
+
+    def test_model_page_explains_when_the_prediction_log_is_not_configured(self):
+        with patch("services.api_client.cached_status", return_value=self._demand_status()), \
+                patch("services.api_client.cached_model_info", return_value={}), \
+                patch("services.api_client.cached_tracking", return_value={
+                    "configured": False, "available": False, "records": []}):
+            app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
+            app.session_state["current_page"] = "Modelo"
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any("DATABASE_URL" in item.value for item in app.info))
+
     def test_legacy_historical_page_selection_returns_to_summary(self):
         with patch("services.api_client.cached_status", return_value={
                     **self._demand_status(), "future_forecast_available": False}), \

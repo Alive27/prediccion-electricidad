@@ -86,5 +86,10 @@ def cached_price_model() -> dict:
     return get("/prices/model")
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_tracking(days: int = 7) -> dict:
+    return get("/predictions/tracking", {"days": days})
+
+
 def predict_price(horizon_hours: int) -> dict:
     return post("/prices/predict", {"horizon_hours": horizon_hours})

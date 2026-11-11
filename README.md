@@ -140,6 +140,16 @@ docker compose up --build
 *   `GET /prices/history?days=1`: histórico PVPC real del indicador ESIOS 1001 para Península; admite 1, 2, 3 o 7 días y devuelve unidad, origen, frescura y timestamps UTC/local.
 *   `GET /prices/model`: estado y esquema del modelo de precios cargado.
 *   `POST /prices/predict`: cuerpo `{"horizon_hours":24}`; acepta 6, 12, 24 o 48 y devuelve estimaciones etiquetadas como salida del modelo.
+*   `GET /predictions/tracking?days=7`: previsiones de demanda registradas en la base de datos frente a la demanda real publicada después, con su error medio (MAE y MAPE).
+
+### Base de datos (Supabase)
+
+El esquema de `schema_bbdd.sql` está creado en PostgreSQL (Supabase) y tiene dos usos:
+
+*   **Histórico:** `load_to_db.py` carga los Parquet de `data/raw/` en `electricity_demand`, `weather_data` y `demanda_clima_historico`.
+*   **Seguimiento del modelo:** cada previsión **actual** de demanda generada por la API se guarda en la tabla `predictions` (`predicted_demand`), y `actual_demand` se completa cuando REData publica la demanda real de esa hora. La página *Modelo* del dashboard muestra previsto frente a real y el error medio. Las simulaciones históricas no se registran.
+
+La conexión se configura con `DATABASE_URL` en el `.env` (cadena del *Session pooler* de Supabase, ver `.env.example`); nunca se versiona. Es opcional: sin ella la API y el dashboard funcionan igual y el registro aparece como no configurado.
 
 ESIOS requiere `ESIOS_API_TOKEN`. El indicador 1001 es PVPC (término de energía de la tarifa regulada); no debe confundirse con el indicador 600, que es el mercado diario SPOT. El artefacto solo tiene variables temporales, así que estas estimaciones son una proyección calendario basada en el Random Forest entrenado y no incorporan condiciones futuras de oferta/demanda. La zona horaria futura se asume Europe/Madrid porque el notebook no deja constancia de la conversión temporal aplicada al índice.
 
