@@ -10,6 +10,7 @@ services:
       DATA_DIR: /data/raw
       LIVE_DEMAND_CACHE_PATH: /cache/redata_demanda_live.parquet
       ESIOS_API_TOKEN: ${ESIOS_API_TOKEN:-}
+      DATABASE_URL: ${DATABASE_URL:-}
       ESIOS_CACHE_DIR: /cache
       MAX_DEMAND_AGE_HOURS: ${MAX_DEMAND_AGE_HOURS:-6}
       DEMAND_LOOKBACK_DAYS: ${DEMAND_LOOKBACK_DAYS:-14}

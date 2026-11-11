@@ -1,15 +1,16 @@
 """FastAPI entry point for the existing demand model."""
 
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 import logging
 import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
+from prediction_store import PredictionStore
 from service import (DataUnavailable, DemandService, ModelUnavailable,
                      PriceService, load_model, load_price_model)
 
@@ -23,6 +24,7 @@ LOGGER = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.prediction_store = PredictionStore(os.getenv("DATABASE_URL"))
     # Curves can be inspected even if the ML artifact fails validation/loading.
     app.state.curve_service = DemandService(None, {}, DATA_DIR)
     try:
@@ -138,10 +140,13 @@ def compare_sources(hours: int = Query(default=48, ge=1, le=720)):
 
 
 @app.post("/predict")
-def predict(request: PredictionRequest):
+def predict(request: PredictionRequest, background_tasks: BackgroundTasks):
     try:
-        return get_service().predict(request.horizon_hours,
-                                     request.allow_stale_simulation)
+        forecast = get_service().predict(request.horizon_hours,
+                                         request.allow_stale_simulation)
+        # Current forecasts are logged after responding; simulations are never stored.
+        background_tasks.add_task(app.state.prediction_store.save_forecast, forecast)
+        return forecast
     except DataUnavailable as error:
         raise HTTPException(status_code=503, detail={
             "message": "No se puede generar una previsión futura válida.",
@@ -149,6 +154,20 @@ def predict(request: PredictionRequest):
         }) from error
     except ModelUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/predictions/tracking")
+def prediction_tracking(days: int = Query(default=7, ge=1, le=90)):
+    """Logged forecasts against the real demand published afterwards by REData."""
+    store = app.state.prediction_store
+    service = getattr(app.state, "service", None)
+    if store.configured and service is not None:
+        try:
+            observed = service._clean_demand(service.demand_data(), datetime.now(UTC))
+            store.record_actuals(observed)
+        except Exception as error:  # the log must never break the endpoint
+            LOGGER.warning("No se pudo obtener la demanda real para el registro: %s", error)
+    return store.tracking(days)
 
 
 @app.get("/evaluation")
