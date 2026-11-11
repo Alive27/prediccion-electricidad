@@ -1,0 +1,9 @@
+# Dependencias de load_to_db.py y de los scripts tests/probar_*.py.
+# No las necesitan la API ni el dashboard (tienen sus propios requirements.txt).
+# Uso: pip install -r requirements-ingesta.txt
+pandas>=2.1,<4
+pyarrow>=14,<25
+requests>=2.31,<3
+python-dateutil>=2.8,<3
+psycopg2-binary>=2.9,<3
+python-dotenv>=1.0,<2
