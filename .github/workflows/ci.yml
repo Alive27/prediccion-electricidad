@@ -31,6 +31,6 @@ jobs:
     - name: Ejecutar Tests Unitarios
       run: |
           python -m unittest discover -s src/api/tests -v
-          python -m unittest discover -s src/dashboard/tests -p test_paths.py -v
+          python -m unittest discover -s src/dashboard/tests -v
           python -m unittest discover -s src/models/tests -v
           pytest tests/
