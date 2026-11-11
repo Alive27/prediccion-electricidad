@@ -5,6 +5,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
 from fastapi.testclient import TestClient
 
 API_DIR = Path(__file__).resolve().parents[1]
@@ -79,8 +80,13 @@ class ApiContractTests(unittest.TestCase):
             api.app.state.prediction_store = api.PredictionStore(
                 "postgresql://user:secret@host/db",
                 connect=lambda: connections.append(1) or self.fail("no debe conectar"))
-            simulation = self.client.post("/predict", json={
-                "horizon_hours": 6, "allow_stale_simulation": True})
+            # La simulación pide a Open-Meteo Archive las temperaturas futuras; se sustituye
+            # para que la prueba no dependa de la red ni de los límites del servicio.
+            with patch.object(self.service, "archived_weather", side_effect=lambda start, end: (
+                    pd.DataFrame({"timestamp_utc": pd.date_range(start, end, freq="h"),
+                                  "temperature_2m": 8.0}))):
+                simulation = self.client.post("/predict", json={
+                    "horizon_hours": 6, "allow_stale_simulation": True})
             self.assertEqual(simulation.status_code, 200)
             self.assertEqual(simulation.json()["prediction_mode"], "historical_simulation")
             self.assertEqual(connections, [])
