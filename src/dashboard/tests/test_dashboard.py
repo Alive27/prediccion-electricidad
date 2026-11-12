@@ -354,7 +354,9 @@ class ViewTests(unittest.TestCase):
                 patch("services.api_client.cached_history", return_value={"records": []}), \
                 patch("services.api_client.cached_curves", return_value={"curves": {}}), \
                 patch("services.api_client.cached_history_between",
-                      return_value={"records": []}):
+                      return_value={"records": []}), \
+                patch("services.api_client.cached_tracking", return_value={
+                    "configured": False, "available": False, "records": []}):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
             app.session_state["current_page"] = "Modelo"
             app.run()
@@ -391,7 +393,8 @@ class ViewTests(unittest.TestCase):
                 patch("services.api_client.cached_model_info", return_value={}):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25).run()
             for theme in ("Claro", "Oscuro", "Sistema"):
-                app.selectbox(key="appearance").set_value(theme).run()
+                app.button_group(key="appearance").set_value(theme).run()
+                self.assertEqual(app.session_state["appearance"], theme)
                 self.assertFalse(app.exception)
 
 

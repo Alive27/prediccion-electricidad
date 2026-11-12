@@ -11,10 +11,11 @@ from components import charts
 from components.forecast import (
     LOCAL_ZONE, is_current, prediction_frame, render_summary, render_timeline,
 )
+from components.data_table import Column, mw, signed_mw, styled_table
 from components.layout import header, section
 from components.run_panel import generation_notice, pending, run_panel, status_chips
 from services import api_client
-from utils.formatting import number, timestamp
+from utils.formatting import WEEKDAYS, number, timestamp
 
 
 def _error_detail(error: requests.HTTPError) -> str:
@@ -59,33 +60,37 @@ def _hourly_profile(frame: pd.DataFrame, simulation: bool = False) -> None:
     charts.show(figure, "model_hourly_profile")
 
 
+def _day(stamp: pd.Timestamp, year: bool = False) -> str:
+    """Short Spanish weekday and date, e.g. "Jue 12/11"."""
+    return f"{WEEKDAYS[stamp.weekday()][:3]} {stamp.strftime('%d/%m/%Y' if year else '%d/%m')}"
+
+
 def _peak_tables(frame: pd.DataFrame, simulation: bool = False) -> None:
     kind = "simulación" if simulation else "previsión"
     section("Horas punta y extremos diarios",
             f"Ranking calculado desde las {len(frame)} salidas de la {kind}.")
-    peaks = frame.nlargest(5, "demand_mw").copy()
-    peaks["Hora local"] = peaks.timestamp_local.map(
-        lambda value: value.strftime("%a %d/%m %H:%M %Z"))
-    value_label = f"Demanda {kind} · MW"
-    peaks = peaks.rename(columns={"demand_mw": value_label})
+    peaks = frame.nlargest(5, "demand_mw")
     daily = []
-    for day, group in frame.groupby(frame.timestamp_local.dt.date, sort=True):
+    for _, group in frame.groupby(frame.timestamp_local.dt.date, sort=True):
         maximum = group.loc[group.demand_mw.idxmax()]
         minimum = group.loc[group.demand_mw.idxmin()]
-        daily.append({
-            "Día local": day.isoformat(),
-            "Máximo · MW": maximum.demand_mw,
-            "Hora máxima": maximum.timestamp_local.strftime("%H:%M %Z"),
-            "Mínimo · MW": minimum.demand_mw,
-            "Hora mínima": minimum.timestamp_local.strftime("%H:%M %Z"),
-        })
-    left, right = st.columns([1, 1.4])
+        daily.append([_day(maximum.timestamp_local, year=True),
+                      mw(maximum.demand_mw), maximum.timestamp_local.strftime("%H:%M %Z"),
+                      mw(minimum.demand_mw), minimum.timestamp_local.strftime("%H:%M %Z")])
+    left, right = st.columns([1, 1.5])
     with left:
-        st.markdown(f"**Cinco horas de mayor demanda en la {kind}**")
-        st.dataframe(peaks[["Hora local", value_label]], width="stretch", hide_index=True)
+        styled_table(
+            [Column("Nº", "18%"), Column("Hora local", "50%"),
+             Column("MW", "32%", numeric=True)],
+            [[f"{rank}", f"{_day(row.timestamp_local)} · {row.timestamp_local:%H:%M %Z}",
+              mw(row.demand_mw)] for rank, row in enumerate(peaks.itertuples(), start=1)],
+            title=f"Cinco horas de mayor demanda en la {kind}", max_height=None)
     with right:
-        st.markdown("**Máximo y mínimo previstos por día**")
-        st.dataframe(pd.DataFrame(daily), width="stretch", hide_index=True)
+        styled_table(
+            [Column("Día", "28%"), Column("Máx. MW", "18%", numeric=True),
+             Column("Hora", "18%", numeric=True), Column("Mín. MW", "18%", numeric=True),
+             Column("Hora", "18%", numeric=True)],
+            daily, title="Máximo y mínimo previstos por día", max_height=None)
 
 
 def _previous_day_comparison(frame: pd.DataFrame, simulation: bool = False) -> None:
@@ -133,30 +138,33 @@ def _previous_day_comparison(frame: pd.DataFrame, simulation: bool = False) -> N
     ]
     forecast["Diferencia · MW"] = (
         forecast.demand_mw - forecast["Día anterior observado · MW"])
-    forecast["Hora local"] = forecast.timestamp_local.map(
-        lambda value: value.strftime("%d/%m %H:%M %Z"))
     value_name = "Simulación · MW" if simulation else "Previsión · MW"
-    comparison = forecast.rename(columns={"demand_mw": value_name})
-    comparison = comparison[["Hora local", value_name,
-                             "Día anterior observado · MW", "Diferencia · MW"]]
-    if comparison["Día anterior observado · MW"].notna().any():
-        st.dataframe(comparison, width="stretch", hide_index=True)
-        st.caption("Los pares sin observación se dejan vacíos. Las horas repetidas o inexistentes "
-                   "por el cambio horario se excluyen para evitar comparaciones ambiguas.")
+    if forecast["Día anterior observado · MW"].notna().any():
+        styled_table(
+            [Column("Hora local", "28%"), Column(value_name, "24%", numeric=True),
+             Column("Día anterior · MW", "24%", numeric=True),
+             Column("Diferencia · MW", "24%", numeric=True)],
+            [[f"{_day(row.timestamp_local)} · {row.timestamp_local:%H:%M %Z}",
+              mw(row.demand_mw), mw(previous), signed_mw(difference)]
+             for row, previous, difference in zip(
+                 forecast.itertuples(), forecast["Día anterior observado · MW"],
+                 forecast["Diferencia · MW"])],
+            note="Los pares sin observación se dejan vacíos. Las horas repetidas o inexistentes "
+                 "por el cambio horario se excluyen para evitar comparaciones ambiguas.",
+            label="Comparación con el día anterior")
     else:
         st.info("REData no dispone de horas equivalentes del día anterior.")
 
 
 def _hourly_table(frame: pd.DataFrame, simulation: bool = False) -> None:
     title = "Simulación histórica por hora" if simulation else "Previsión horaria"
-    section(title, "Cada fila procede de la respuesta de FastAPI; unidad MW.")
-    table = frame[["timestamp_local", "demand_mw"]].copy()
-    table["Hora peninsular"] = table.timestamp_local.map(
-        lambda value: value.strftime("%A %d/%m/%Y %H:%M %Z"))
+    section(title, "Salida horaria del modelo de demanda · MW · hora peninsular.")
     value_label = "Demanda simulada · MW" if simulation else "Demanda prevista · MW"
-    table = table.rename(columns={"demand_mw": value_label})
-    st.dataframe(table[["Hora peninsular", value_label]],
-                 width="stretch", hide_index=True)
+    styled_table(
+        [Column("Día", "34%"), Column("Hora", "30%"), Column(value_label, "36%", numeric=True)],
+        [[_day(row.timestamp_local, year=True), row.timestamp_local.strftime("%H:%M %Z"),
+          mw(row.demand_mw)] for row in frame.itertuples()],
+        label=title)
 
 
 def _tracking_section(days: int = 7) -> None:
@@ -212,7 +220,9 @@ def _tracking_section(days: int = 7) -> None:
 
 
 def render(datasets: dict) -> None:
-    header("Modelo", "Previsión horaria con el modelo existente · 6, 12, 24 o 48 horas")
+    header("Predicción de demanda",
+           "Previsión horaria de la demanda eléctrica peninsular · 6, 12, 24 o 48 horas",
+           eyebrow="MODELO DE DEMANDA")
     try:
         status = api_client.cached_status()
     except (requests.RequestException, ValueError) as error:

@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from components.charts import base_figure, show as show_chart
+from components.charts import MODEL, OBSERVED, REFERENCE, base_figure, show as show_chart
 from utils.formatting import number
 
 
@@ -72,7 +72,7 @@ def render_timeline(history_records: list[dict], forecast: dict,
                       for time, utc in zip(local, observed.timestamp_utc)]
             figure.add_trace(go.Scatter(
                 x=axis, y=observed.demand_mw, mode="lines", name="Demanda observada",
-                line={"color": "#4385e5", "width": 2.5},
+                line={"color": OBSERVED, "width": 2.4},
                 customdata=custom,
                 hovertemplate="%{customdata[0]} (Europe/Madrid)<br>UTC %{customdata[1]}<br>"
                               "Demanda real · <b>%{y:,.0f} MW</b><extra></extra>",
@@ -84,7 +84,7 @@ def render_timeline(history_records: list[dict], forecast: dict,
         mode="lines+markers",
         name=("Simulación histórica" if forecast.get("prediction_mode") ==
               "historical_simulation" else "Previsión"),
-        line={"color": "#c47d22", "width": 2.7, "dash": "dash"},
+        line={"color": MODEL, "width": 2.6, "dash": "dash"},
         marker={"size": 5},
         customdata=[[time.strftime("%d/%m/%Y %H:%M %Z"), utc.isoformat()]
                     for time, utc in zip(local_forecast, predictions.timestamp_utc)],
@@ -92,12 +92,12 @@ def render_timeline(history_records: list[dict], forecast: dict,
                       "Demanda estimada · <b>%{y:,.0f} MW</b><extra></extra>",
     ))
     origin_axis = origin.tz_convert("UTC").tz_localize(None)
-    figure.add_vline(x=origin_axis, line_dash="dot", line_color="#718096", line_width=1.5)
+    figure.add_vline(x=origin_axis, line_dash="dot", line_color=REFERENCE, line_width=1.2)
     figure.add_annotation(x=origin_axis, y=1, yref="paper", text=(
         "Referencia de simulación" if forecast.get("prediction_mode") ==
         "historical_simulation" else "Última demanda real"),
                           showarrow=False, xanchor="left", yanchor="bottom",
-                          font={"size": 11, "color": "#596575"})
+                          font={"size": 11, "color": REFERENCE})
     tick_times = pd.concat([
         observed.timestamp_utc if history_records else pd.Series(dtype="datetime64[ns, UTC]"),
         predictions.timestamp_utc,

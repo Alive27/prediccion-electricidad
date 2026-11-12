@@ -8,22 +8,52 @@ import streamlit as st
 from components.icons import svg
 
 PAGES = ["Resumen", "Modelo", "Precios", "Datos", "Estado del sistema"]
+# Colour tokens per appearance. Everything else (type, spacing, radii, motion) lives in
+# styles/dashboard.css. Surfaces go from the page background (--bg) to panels
+# (--surface), cards inside them (--surface-2) and floating layers (--surface-3).
+_DARK = (
+    "--scheme:dark;"
+    "--bg:#070b11;--bg-glow-1:rgba(53,208,224,.16);--bg-glow-2:rgba(79,124,255,.14);"
+    "--bg-glow-3:rgba(124,92,246,.09);"
+    "--surface:rgba(26,35,48,.46);--surface-solid:#111922;--surface-2:rgba(255,255,255,.04);"
+    "--sheen:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.012) 46%);"
+    "--surface-3:rgba(16,23,32,.94);--sidebar:rgba(11,16,23,.86);"
+    "--line:rgba(255,255,255,.085);--line-strong:rgba(255,255,255,.15);"
+    "--highlight:rgba(255,255,255,.09);"
+    "--segment:rgba(255,255,255,.11);"
+    "--ink:#e9eef5;--ink-2:#a7b2c0;--ink-3:#6f7b8b;"
+    "--accent:#35d0e0;--accent-strong:#67e3ef;--accent-soft:rgba(53,208,224,.13);"
+    "--accent-ink:#04141a;--electric:#5b8cff;"
+    "--success:#3ddc97;--warning:#f2b45a;--danger:#ff6b6b;"
+    "--grid:rgba(148,163,184,.12);"
+    "--shadow-1:0 1px 0 rgba(255,255,255,.04) inset,0 10px 30px rgba(0,0,0,.32);"
+    "--shadow-2:0 1px 0 rgba(255,255,255,.06) inset,0 24px 60px rgba(0,0,0,.48);"
+)
 TOKENS = {
-    "Sistema": (
-        "--scheme:dark;--paper:#07130f;--card:#0d1d17;--sidebar:#091711;"
-        "--ink:#e7f5ed;--muted:#8da99a;--border:#1c3a2c;--blue:#21d18b;"
-        "--soft:#103b2a;--success:#54e6a4;--amber:#f0c272;--error:#ff9999;"
-        "--grid:#1a382a;--shadow:0 12px 32px rgba(0,0,0,.28);"
+    "Sistema": _DARK,
+    "Claro": (
+        "--scheme:light;"
+        "--bg:#eaeff5;--bg-glow-1:rgba(10,165,184,.16);--bg-glow-2:rgba(79,124,255,.13);"
+        "--bg-glow-3:rgba(124,92,246,.08);"
+        "--surface:rgba(255,255,255,.58);--surface-solid:#ffffff;"
+        "--sheen:linear-gradient(180deg,rgba(255,255,255,.75),rgba(255,255,255,.25) 46%);"
+        "--surface-2:rgba(15,23,42,.028);--surface-3:rgba(255,255,255,.97);"
+        "--sidebar:rgba(248,250,252,.9);"
+        "--line:rgba(15,23,42,.08);--line-strong:rgba(15,23,42,.16);"
+        "--highlight:rgba(255,255,255,.7);"
+        "--segment:#ffffff;"
+        "--ink:#0f1722;--ink-2:#4a5667;--ink-3:#7a8697;"
+        "--accent:#0a9db0;--accent-strong:#077f8f;--accent-soft:rgba(10,157,176,.11);"
+        "--accent-ink:#ffffff;--electric:#3d6fe6;"
+        "--success:#12915f;--warning:#b7791f;--danger:#d64545;"
+        "--grid:rgba(15,23,42,.08);"
+        "--shadow-1:0 1px 0 rgba(255,255,255,.8) inset,0 8px 24px rgba(15,23,42,.07);"
+        "--shadow-2:0 1px 0 rgba(255,255,255,.8) inset,0 20px 48px rgba(15,23,42,.12);"
     ),
-    "Claro": "--scheme:light;--paper:#f6f7f9;--card:#ffffff;--sidebar:#fcfcfd;"
-             "--ink:#17251f;--muted:#60746a;--border:#d9e7df;--blue:#078c63;"
-             "--soft:#e5f6ed;--success:#08794f;--amber:#9a6c12;--error:#b83232;"
-             "--grid:#deebe3;--shadow:0 12px 32px rgba(13,58,39,.07);",
-    "Oscuro": "--scheme:dark;--paper:#07130f;--card:#0d1d17;--sidebar:#091711;"
-              "--ink:#e7f5ed;--muted:#8da99a;--border:#1c3a2c;--blue:#21d18b;"
-              "--soft:#103b2a;--success:#54e6a4;--amber:#f0c272;--error:#ff9999;"
-              "--grid:#1a382a;--shadow:0 12px 32px rgba(0,0,0,.28);",
+    "Oscuro": _DARK,
 }
+THEME_ICONS = {"Sistema": ":material/contrast:", "Claro": ":material/light_mode:",
+               "Oscuro": ":material/dark_mode:"}
 NAV_GROUPS = (
     ("PREDICCIONES", (("Resumen", "dashboard"), ("Modelo", "model_training"),
                       ("Precios", "payments"))),
@@ -59,9 +89,12 @@ def sidebar() -> tuple[str, str]:
                     st.button(label, icon=f":material/{icon}:", width="stretch",
                               type="primary" if label == page else "tertiary",
                               key=f"nav_{PAGES.index(label)}", on_click=navigate, args=(label,))
-        if "appearance" not in st.session_state:
+        if st.session_state.get("appearance") not in THEME_ICONS:
             st.session_state["appearance"] = "Sistema"
-        theme = st.selectbox("Tema", ["Sistema", "Claro", "Oscuro"], key="appearance")
+        with st.container(key="sidebar-theme"):
+            theme = st.segmented_control(
+                "Apariencia", list(THEME_ICONS), key="appearance", required=True,
+                format_func=lambda name: f"{THEME_ICONS[name]} {name}", width="stretch")
     return page, theme
 
 
@@ -75,7 +108,7 @@ def apply_theme(theme: str) -> None:
     st.markdown(f"<style>:root{{{tokens}}}{system}{styles}</style>", unsafe_allow_html=True)
 
 
-def header(title: str, subtitle: str, eyebrow: str = "ESPAÑA PENINSULAR") -> None:
+def header(title: str, subtitle: str, eyebrow: str = "SISTEMA ELÉCTRICO PENINSULAR") -> None:
     st.markdown(
         f'<div class="page-heading"><div class="eyebrow">{escape(eyebrow)}</div>'
         f'<h1>{escape(title)}</h1><p>{escape(subtitle)}</p></div>', unsafe_allow_html=True,

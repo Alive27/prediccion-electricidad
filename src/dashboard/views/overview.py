@@ -78,6 +78,7 @@ def render(datasets: dict) -> None:
     header(
         "Centro de control energético",
         "Demanda agregada peninsular, datos observados y modelos en una vista interactiva.",
+        eyebrow="RESUMEN",
     )
     try:
         status = api_client.cached_status()

@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from components.charts import base_figure, show
+from components.charts import MODEL, base_figure, show
 from components.layout import header, section
 from components.run_panel import generation_notice, pending, run_panel, status_chips
 from services import api_client
@@ -18,9 +18,9 @@ from utils.formatting import WEEKDAYS, local_datetime, number
 
 LOCAL_ZONE = "Europe/Madrid"
 BANDS = {   # relative bands over the forecast, cheapest third to most expensive third
-    "valle": ("Valle", "Horas más baratas: buen momento para concentrar consumo", "#21d18b"),
-    "llano": ("Llano", "Precio intermedio", "#f0c272"),
-    "punta": ("Punta", "Horas más caras: mejor desplazar el consumo", "#ff7b72"),
+    "valle": ("Valle", "Horas más baratas: buen momento para concentrar consumo", "#3ddc97"),
+    "llano": ("Llano", "Precio intermedio", "#f2b45a"),
+    "punta": ("Punta", "Horas más caras: mejor desplazar el consumo", "#ff6b6b"),
 }
 
 
@@ -124,7 +124,7 @@ def _chart(frame: pd.DataFrame, key: str) -> None:
         customdata=list(zip(frame.local.dt.strftime("%d/%m/%Y %H:%M %Z"),
                             [BANDS[band][0] for band in frame.band])),
         mode="lines+markers", name="Precio previsto",
-        line={"color": "#8b5cf6", "width": 2.5, "dash": "dash"},
+        line={"color": MODEL, "width": 2.4, "dash": "dash"},
         marker={"size": 8, "color": [BANDS[band][2] for band in frame.band]},
         hovertemplate="%{customdata[0]}<br>Precio previsto · %{y:,.4f} €/kWh"
                       "<br>Franja %{customdata[1]}<extra></extra>"))
@@ -135,7 +135,8 @@ def _chart(frame: pd.DataFrame, key: str) -> None:
 
 def render(datasets: dict) -> None:
     header("Predicción de precios",
-           "Previsión horaria del precio de la electricidad · 6, 12, 24 o 48 horas")
+           "Previsión horaria del precio de la electricidad · 6, 12, 24 o 48 horas",
+           eyebrow="MODELO DE PRECIOS")
     try:
         model = api_client.cached_price_model()
     except (requests.RequestException, ValueError):

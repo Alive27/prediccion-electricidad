@@ -46,7 +46,7 @@ S = plan.WORLD_SCALE
 LOT_Z = 0.02            # top of parcels and sidewalks (native units)
 COLLECTIONS = ["TERRAIN", "ROADS", "COMMERCIAL_DISTRICT", "RESIDENTIAL_DISTRICT",
                "INDUSTRIAL_DISTRICT", "SUBSTATION", "VEGETATION", "STREET_LIGHTING",
-               "URBAN_DETAILS"]
+               "POWER_GRID", "URBAN_DETAILS"]
 
 FOOTPRINTS = []         # solid footprints for overlap checks: (name, x0, y0, x1, y1)
 PLACED = []             # every placed object with its metadata
@@ -949,7 +949,8 @@ def build_substation(block, materials):
     # Floodlights inside the yard.
     for u, v in ((fx0 + 0.25, fy0 + 0.25), (fx1 - 0.25, fy1 - 0.25), (fx1 - 0.25, fy0 + 0.25)):
         place("roads", "light-square", u, v, 1 if u < 0 else 3, col, "substation_floodlight")
-    return dict(gantry_east=(fx1 - 0.2, phases), bounds=(fx0, fy0, fx1, fy1))
+    return dict(gantry_east=(fx1 - 0.2, phases), bounds=(fx0, fy0, fx1, fy1),
+                feeder=(bays[0] + 0.15, fy1 - 0.22, 2 * LOT_Z + 0.24))
 
 
 def lattice_tower_mesh(materials, height=2.3):
@@ -984,12 +985,15 @@ def lattice_tower_mesh(materials, height=2.3):
 def catenary(builder, p0, p1, sag, radius=0.007, steps=10):
     p0, p1 = Vector(p0), Vector(p1)
     prev = p0
+    points = [p0.copy()]
     for k in range(1, steps + 1):
         t = k / steps
         p = p0.lerp(p1, t)
         p.z -= sag * 4 * t * (1 - t)
         builder.tube(prev, p, radius, "cable", 4)
+        points.append(p.copy())
         prev = p
+    return points
 
 
 def build_power_lines(materials, sub):
@@ -1014,21 +1018,8 @@ def build_power_lines(materials, sub):
     # Overhead earth wire.
     catenary(w, (t0[0], t0[1], 2.48), (t1[0], t1[1], 2.48), 0.15, radius=0.005)
 
-    # Medium-voltage distribution along the outer ring towards the city (Kenney poles).
-    poles = []
-    y = -7.6
-    while y < 13.0:
-        poles.append((15.62, y))
-        y += 2.1
-    for k, (px, py) in enumerate(poles):
-        place("roads", "electricity-pole", px, py, 0, "STREET_LIGHTING", f"mv_pole_{k:02d}",
-              z=0.0, solid=True)
-    # Kenney pole: cross-arm along X with insulators near x=-0.28 / +0.26 at z~0.5.
-    for (ax, ay), (bx, by) in zip(poles, poles[1:]):
-        for dx in (-0.255, 0.235):
-            catenary(w, (ax + dx, ay, 0.505), (bx + dx, by, 0.505), 0.06, radius=0.006, steps=8)
     w.to_object("power_lines_conductors", "SUBSTATION", 0, 0, 0)
-    return poles
+    return []
 
 
 # --------------------------------------------------------------------------- street furniture
@@ -1045,11 +1036,15 @@ def lamp_glow_cross(x, y, materials):
 
 
 LAMP_LENSES = []
+# Supports of the low/medium-voltage street grid: distribution poles on the trunk roads
+# from the substation, street lamps elsewhere. Each: x, y, kind, q, run, along.
+SUPPORTS = []
+POLE_ROADS = {"collector", "industrial", "ring"}
 
 
 def build_street_furniture(materials):
     """Lamps and trees on sidewalks, traffic lights at main junctions."""
-    spacing = {"avenue": 1, "collector": 2, "ring": 3, "center": 2, "local": 3, "industrial": 2}
+    spacing = {"avenue": 1, "collector": 2, "ring": 3, "center": 2, "local": 2, "industrial": 2}
     counts = {"lamps": 0, "street_trees": 0, "traffic_lights": 0}
     for cell, kind in sorted(ROAD_CELLS.items()):
         mask = plan.road_mask(ROAD_CELLS, RB_CELLS, cell)
@@ -1065,12 +1060,13 @@ def build_street_furniture(materials):
         if near_junction:
             continue
         k = i if mask == {"E", "W"} else j
-        if k % spacing[kind]:
+        lamp_cell = k % spacing[kind] == 0
+        if not lamp_cell and not (kind in POLE_ROADS and k % 2 == 1):
             continue
         x, y = plan.cell_center(i, j)
-        side = 1 if (k // spacing[kind]) % 2 else -1
+        side = 1   # one sidewalk per street, so the cable between lamps runs straight
         horizontal = mask == {"E", "W"}
-        for s in ((-1, 1) if kind == "avenue" else (side,)):
+        for s in ((-1, 1) if kind == "avenue" else (side,)) if lamp_cell else ():
             # Kenney light-square: pole at origin, arm towards +Y.
             px, py = (x, y + s * 0.445) if horizontal else (x + s * 0.445, y)
             if kind == "avenue" and (k + (s > 0)) % 2:
@@ -1083,6 +1079,19 @@ def build_street_furniture(materials):
                   z=LOT_Z)
             lamp_glow(px, py, q, materials)
             counts["lamps"] += 1
+            if kind not in POLE_ROADS and s > 0:
+                SUPPORTS.append(dict(x=px, y=py, kind="lamp", q=q,
+                                     run=("h" if horizontal else "v", j if horizontal else i, s),
+                                     along=px if horizontal else py))
+        # Distribution poles on the trunk roads: opposite sidewalk, on the cells between lamps.
+        if kind in POLE_ROADS and k % 2 == 1:
+            px, py = (x, y - 0.445) if horizontal else (x - 0.445, y)
+            place("roads", "electricity-pole-single", px, py, 0 if horizontal else 1,
+                  "POWER_GRID", f"grid_pole_{i}_{j}", z=LOT_Z, solid=True)
+            SUPPORTS.append(dict(x=px, y=py, kind="pole", q=0 if horizontal else 1,
+                                 run=("h" if horizontal else "v", j if horizontal else i, -1),
+                                 along=px if horizontal else py))
+            counts["grid_poles"] = counts.get("grid_poles", 0) + 1
     # Traffic lights at the four corners of the main signalised junctions.
     for ci, cj in ((17, 17), (12, 17), (22, 17), (17, 12), (17, 22), (17, 8), (17, 26)):
         x, y = plan.cell_center(ci, cj)
@@ -1101,6 +1110,164 @@ def build_street_furniture(materials):
         lenses.box(lx, ly, lz + LOT_Z, 0.05, 0.05, 0.012, "glow")
     lenses.to_object("street_lamp_lenses", "STREET_LIGHTING")
     return counts
+
+
+def _attach(support, conductor=1):
+    """Cable attachment point of a support (native units)."""
+    if support["kind"] == "pole":
+        # electricity-pole-single: insulators at (-0.032, +-0.08, 0.508), arm along Y.
+        ox, oy = -0.032, 0.08 * conductor
+        if support["q"] % 2:
+            ox, oy = -oy, ox
+        return (support["x"] + ox, support["y"] + oy, LOT_Z + 0.508)
+    return (support["x"], support["y"], LOT_Z + 0.575)   # light-square pole top
+
+
+ENERGY_ROUTES = 4
+
+
+def build_grid(materials, feeder):
+    """Cables between supports, service drops to every building and a few energy routes.
+
+    Each route is one continuous line of cable from the substation: at every branch it
+    takes a single way (the one other routes have used least, then the longest), and it
+    never enters a service drop. The dashboard animates one amber trail per route.
+    """
+    import heapq
+
+    nodes = SUPPORTS
+    n = len(nodes)
+
+    def gap(a, b):
+        return math.hypot(nodes[a]["x"] - nodes[b]["x"], nodes[a]["y"] - nodes[b]["y"])
+
+    edges = set()
+    runs = {}
+    for index, node in enumerate(nodes):
+        runs.setdefault(node["run"], []).append(index)
+    for members in runs.values():
+        members.sort(key=lambda index: nodes[index]["along"])
+        for a, b in zip(members, members[1:]):
+            if gap(a, b) <= 4.6:
+                edges.add((a, b))
+    # Join streets at junctions: shortest links between disconnected groups.
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in edges:
+        parent[find(a)] = find(b)
+    for limit in (2.6, 3.4, 4.6, 6.5):
+        pairs = sorted((gap(a, b), a, b) for a in range(n) for b in range(a + 1, n)
+                       if gap(a, b) <= limit and find(a) != find(b))
+        for _, a, b in pairs:
+            if find(a) != find(b):
+                parent[find(a)] = find(b)
+                edges.add((a, b))
+        if len({find(a) for a in range(n)}) == 1:
+            break
+    # Root: the substation's medium-voltage cabinets feed the nearest support.
+    fx, fy, fz = feeder
+    first = min(range(n), key=lambda index: math.hypot(nodes[index]["x"] - fx,
+                                                        nodes[index]["y"] - fy))
+    # Shortest cable distance from the substation (Dijkstra).
+    adjacency = {index: [] for index in range(n)}
+    for a, b in edges:
+        adjacency[a].append(b)
+        adjacency[b].append(a)
+    start = math.dist((fx, fy, fz), _attach(nodes[first]))
+    distance = {first: start}
+    queue = [(start, first)]
+    while queue:
+        d, a = heapq.heappop(queue)
+        if d > distance.get(a, math.inf):
+            continue
+        for b in adjacency[a]:
+            nd = d + math.dist(_attach(nodes[a]), _attach(nodes[b]))
+            if nd < distance.get(b, math.inf):
+                distance[b] = nd
+                heapq.heappush(queue, (nd, b))
+
+    wires = MeshBuilder(materials)
+    spans = {}   # (from, to) oriented away from the substation -> cable points
+    feeder_points = catenary(wires, (fx, fy, fz), _attach(nodes[first]), 0.04, 0.005, 10)
+    for a, b in edges:
+        if a not in distance or b not in distance:
+            continue
+        if distance[b] < distance[a]:
+            a, b = b, a
+        poles = nodes[a]["kind"] == "pole" and nodes[b]["kind"] == "pole"
+        sag, radius = (0.05, 0.005) if poles else (0.03, 0.0032)
+        steps = max(6, int(gap(a, b) * 4))
+        points = catenary(wires, _attach(nodes[a]), _attach(nodes[b]), sag, radius, steps)
+        if poles:   # second conductor, static only
+            catenary(wires, _attach(nodes[a], -1), _attach(nodes[b], -1), sag, radius, steps)
+        if distance[b] > distance[a]:
+            spans[(a, b)] = points
+    # Service drops: from the nearest support to the facade of every building.
+    drops = 0
+    buildings = [record for record in PLACED if "w" in record and record["collection"] in (
+        "RESIDENTIAL_DISTRICT", "COMMERCIAL_DISTRICT", "INDUSTRIAL_DISTRICT")
+        and record["model"].split("/")[-1].startswith("building")]
+    print(f"GRID buildings={len(buildings)}")
+    for record in buildings:
+        x0, x1 = record["x"] - record["w"] / 2, record["x"] + record["w"] / 2
+        y0, y1 = record["y"] - record["d"] / 2, record["y"] + record["d"] / 2
+
+        def to_facade(node):
+            return (min(max(node["x"], x0 + 0.02), x1 - 0.02),
+                    min(max(node["y"], y0 + 0.02), y1 - 0.02))
+
+        reachable = [index for index in distance]
+        index = min(reachable, key=lambda k: math.dist((nodes[k]["x"], nodes[k]["y"]),
+                                                        to_facade(nodes[k])))
+        tx, ty = to_facade(nodes[index])
+        if math.dist((nodes[index]["x"], nodes[index]["y"]), (tx, ty)) > 2.6:
+            continue
+        target = (tx, ty, record["z"] + min(record["h"] * 0.55, 0.62))
+        source = _attach(nodes[index])
+        catenary(wires, source, target, 0.02, 0.0028, 6)
+        drops += 1
+    wires.to_object("grid_cables", "POWER_GRID")
+
+    # Energy routes: single lines through the grid, diverging at the first branches.
+    children = {}
+    for a, b in spans:
+        children.setdefault(a, []).append(b)
+    span_length = {key: sum((pts[k + 1] - pts[k]).length for k in range(len(pts) - 1))
+                   for key, pts in spans.items()}
+    reach_memo = {}
+
+    def reach(a):
+        if a not in reach_memo:
+            reach_memo[a] = max((span_length[(a, b)] + reach(b) for b in children.get(a, ())),
+                                default=0.0)
+        return reach_memo[a]
+
+    usage = {}
+    routes = []
+    for _ in range(ENERGY_ROUTES):
+        node, points, walked = first, list(feeder_points), []
+        while children.get(node):
+            nxt = min(children[node], key=lambda b: (usage.get((node, b), 0),
+                                                     -(span_length[(node, b)] + reach(b))))
+            walked.append((node, nxt))
+            points.extend(spans[(node, nxt)][1:])
+            node = nxt
+        for key in walked:
+            usage[key] = usage.get(key, 0) + 1
+        if walked and walked not in [route["edges"] for route in routes]:
+            routes.append({"edges": walked, "points": [tuple(point) for point in points]})
+    lengths = [round(sum(span_length[key] for key in route["edges"]), 1) for route in routes]
+    print(f"GRID supports={n} spans={len(edges)} drops={drops} "
+          f"unreached={n - len(distance)} routes={lengths}")
+    return [{"points": route["points"]} for route in routes], {
+        "supports": n, "spans": len(edges), "drops": drops, "unreached": n - len(distance),
+        "energy_routes": len(routes)}
 
 
 def build_roundabout_islands(materials):
@@ -1264,7 +1431,7 @@ def validate(scene):
             cx, cy = plan.cell_center(*cell)
             if x0 < cx + 0.5 - 0.02 and x1 > cx - 0.5 + 0.02 and \
                     y0 < cy + 0.5 - 0.02 and y1 > cy - 0.5 + 0.02:
-                if not name.startswith(("mv_pole", "hv_tower")):
+                if not name.startswith(("grid_pole", "hv_tower")):
                     report["overlaps"].append([name, f"road{cell}"])
     # Ground contact and terrain bounds (world space).
     half = 32.0
@@ -1313,61 +1480,22 @@ def export_glb(path):
     )
 
 
-def route_world(cells):
-    """Convert a list of grid cells to Three.js world coordinates (x, z)."""
-    out = []
-    for i, j in cells:
-        x, y = plan.cell_center(i, j)
-        out.append([round(x * S, 3), round(-y * S, 3)])
-    return out
+def network_world(paths):
+    """Energy routes in Three.js coordinates (x, y up, z = -y) and world units."""
+    return [{"points": [[round(x * S, 3), round(z * S, 3), round(-y * S, 3)]
+                        for x, y, z in path["points"]]} for path in paths]
 
 
-def shortest_path(a, b):
-    from collections import deque
-    graph = set(ROAD_CELLS) | set(RB_CELLS)
-    prev = {a: None}
-    todo = deque([a])
-    while todo:
-        c = todo.popleft()
-        if c == b:
-            break
-        for di, dj in plan.DIRS.values():
-            n = (c[0] + di, c[1] + dj)
-            if n in graph and n not in prev:
-                prev[n] = c
-                todo.append(n)
-    path, c = [], b
-    while c is not None:
-        path.append(c)
-        c = prev[c]
-    return path[::-1]
-
-
-def simplify(path):
-    """Keep only the corners of a cell path."""
-    if len(path) < 3:
-        return path
-    out = [path[0]]
-    for p, c, n in zip(path, path[1:], path[2:]):
-        if (c[0] - p[0], c[1] - p[1]) != (n[0] - c[0], n[1] - c[1]):
-            out.append(c)
-    out.append(path[-1])
-    return out
-
-
-def write_sidecar(report, road_stats, furniture):
-    source = (26, 5)   # substation gate on the industrial road
-    targets = {"centro": (17, 17), "residencial_oeste": (5, 17), "residencial_norte": (24, 32),
-               "industrial": (29, 8), "plaza": (13, 22), "noreste": (32, 22)}
-    routes = {name: route_world(simplify(shortest_path(source, t)))
-              for name, t in targets.items()}
+def write_sidecar(report, road_stats, furniture, paths):
     sidecar = {
         "version": 1,
         "units": "Three.js world units (glTF metres), y up",
         "terrain": {"size": 64, "half": 32},
         "camera": {"target": [0, 1.2, 0], "direction": [1, 0.85, 1.05]},
         "glowMaterials": ["city_glow"],
-        "energyRoutes": routes,
+        # A few single lines of cable from the substation through the street grid:
+        # the dashboard runs one amber trail along each of them.
+        "energyRoutes": network_world(paths),
         "stats": {"triangles": report["triangles"], "uniqueMeshes": report["unique_meshes"],
                   "objects": sum(report["counts"].values()), "roads": road_stats,
                   "furniture": furniture},
@@ -1409,6 +1537,7 @@ def main():
     build_leftovers(materials)
     poles = build_power_lines(materials, sub)
     furniture = build_street_furniture(materials)
+    grid_paths, furniture["grid"] = build_grid(materials, sub["feeder"])
     furniture["outskirts_trees"] = build_outskirts(poles)
 
     cam = setup_render_scene(scene)
@@ -1425,7 +1554,7 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=str(HERE / "energy_city.blend"), compress=True)
     if "--no-export" not in ARGS:
         export_glb(STATIC_CITY / "energy_city.glb")
-        write_sidecar(report, road_stats, furniture)
+        write_sidecar(report, road_stats, furniture, grid_paths)
     if "--no-render" not in ARGS:
         render_views(scene, cam)
 

@@ -2,11 +2,12 @@ import * as THREE from "../vendor/three/build/three.module.js?v=1";
 import { OrbitControls } from "../vendor/three/examples/jsm/controls/OrbitControls.js?v=1";
 import { GLTFLoader } from "../vendor/three/examples/jsm/loaders/GLTFLoader.js?v=1";
 import { createHotspots } from "./hotspots.js?v=3";
+import { createEnergyNetwork } from "./energy_network.js?v=3";
 
 // The city is built in Blender (blender/build_city.py) and exported as one GLB.
-// The sidecar JSON carries the energy routes used by the demand pulses.
-const CITY_GLB = new URL("./energy_city.glb?v=5", import.meta.url).href;
-const CITY_LAYOUT = new URL("./energy_city.json?v=1", import.meta.url).href;
+// The sidecar JSON carries the street grid cables used by the demand trails.
+const CITY_GLB = new URL("./energy_city.glb?v=7", import.meta.url).href;
+const CITY_LAYOUT = new URL("./energy_city.json?v=3", import.meta.url).href;
 const GROUND_DISTRICTS = new Set(["ROADS", "TERRAIN"]);
 
 const canvas = document.querySelector("#city");
@@ -37,8 +38,8 @@ function startScene() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color("#06120e");
-  scene.fog = new THREE.Fog("#06120e", 95, 190);
+  scene.background = new THREE.Color("#070b11");
+  scene.fog = new THREE.Fog("#070b11", 95, 190);
   const camera = new THREE.PerspectiveCamera(38, 1, 0.5, 400);
   camera.position.set(60, 52, 64);
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -64,14 +65,19 @@ function startScene() {
     clearTimeout(resumeTimer);
     resumeTimer = setTimeout(() => { controls.autoRotate = true; }, 8000);
   });
-  // Fixed zoom: the wheel never zooms the city, it scrolls the dashboard page.
+  // Fixed zoom: the wheel never zooms the city, it scrolls the dashboard page. Streamlit
+  // scrolls its main section, not the window, so target that element when it exists.
   const onWheel = (event) => {
     event.preventDefault();
-    window.parent.scrollBy({ top: event.deltaY, behavior: "auto" });
+    let scroller = window.parent;
+    try {
+      scroller = window.parent.document.querySelector('[data-testid="stMain"]') || window.parent;
+    } catch (error) { /* cross-origin parent: fall back to the window */ }
+    scroller.scrollBy({ top: event.deltaY, behavior: "auto" });
   };
   canvas.addEventListener("wheel", onWheel, { capture: true, passive: false });
 
-  scene.add(new THREE.HemisphereLight(0xd7f5e6, 0x0b1a14, 1.25));
+  scene.add(new THREE.HemisphereLight(0xdde8f4, 0x0a1018, 1.25));
   const key = new THREE.DirectionalLight(0xfff1dc, 2.1);
   key.position.set(-28, 46, 22);
   key.castShadow = true;
@@ -80,7 +86,7 @@ function startScene() {
   key.shadow.bias = -0.0004;
   key.shadow.normalBias = 0.03;
   scene.add(key);
-  const fill = new THREE.DirectionalLight(0x7ff0d8, 0.45);
+  const fill = new THREE.DirectionalLight(0x7fd8ff, 0.45);
   fill.position.set(30, 18, -26);
   scene.add(fill);
 
@@ -88,15 +94,8 @@ function startScene() {
   scene.add(city);
   const glowMaterials = [];
   const emissiveLights = [];
-  const pulses = [];
-  let energyRoutes = [];
+  let energyNetwork = null;
   let hotspots = null;
-
-  const glow = new THREE.MeshBasicMaterial({
-    color: 0x36f2c0, transparent: true, opacity: 0.4, depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-  const pulseGeo = new THREE.SphereGeometry(0.2, 12, 8);
 
   Promise.all([
     new GLTFLoader().loadAsync(CITY_GLB),
@@ -111,8 +110,7 @@ function startScene() {
       root: gltf.scene, scene, camera, canvas, layer: hotspotLayer, onOpen: openSection,
     });
     const drawCalls = instanceRepeatedMeshes(gltf.scene);
-    energyRoutes = Object.values(layout.energyRoutes || {}).filter((route) => route.length > 1);
-    createPulses();
+    energyNetwork = createEnergyNetwork(layout.energyRoutes, scene);
     createEnergyLights(gltf.scene);
     cityFrame = measureCity();
     resize();
@@ -120,6 +118,7 @@ function startScene() {
     canvas.dataset.cityReady = "true";
     canvas.dataset.drawGroups = String(drawCalls);
     canvas.dataset.hotspots = String(hotspots.count);
+    canvas.dataset.energyPaths = String(energyNetwork?.paths ?? 0);
   }).catch((error) => {
     console.error("Falló la carga de la ciudad 3D:", error);
     if (loading) loading.style.display = "none";
@@ -145,25 +144,12 @@ function startScene() {
     });
   }
 
-  function createPulses() {
-    const count = Math.max(12, energyRoutes.length * 4);
-    for (let i = 0; i < count; i += 1) {
-      const pulse = new THREE.Mesh(pulseGeo, glow.clone());
-      pulse.userData.phase = (i / count + (i % 3) * 0.17) % 1;
-      pulse.userData.route = i % energyRoutes.length;
-      pulse.position.y = 0.32;
-      pulse.renderOrder = 2;
-      scene.add(pulse);
-      pulses.push(pulse);
-    }
-  }
-
   function createEnergyLights(root) {
     const anchors = ["plaza_energy_beacon", "substation_transformer_T2"]
       .map((name) => root.getObjectByName(name)).filter(Boolean);
     for (const anchor of anchors) {
       const position = anchor.getWorldPosition(new THREE.Vector3());
-      const light = new THREE.PointLight(0x1bd68a, 1.2, 9, 2);
+      const light = new THREE.PointLight(0x35d0e0, 1.2, 9, 2);
       light.position.set(position.x, position.y + 2.2, position.z);
       scene.add(light);
       emissiveLights.push(light);
@@ -235,25 +221,19 @@ function startScene() {
   const observer = new ResizeObserver(resize);
   observer.observe(canvas);
   let frame = 0;
+  let previous = performance.now() * 0.001;
   function animate() {
     frame = requestAnimationFrame(animate);
     const seconds = performance.now() * 0.001;
+    const delta = Math.min(0.1, seconds - previous);
+    previous = seconds;
     const forecast = config.forecastScale || [];
     const index = forecast.length ? Math.floor(seconds / 3) % forecast.length : 0;
     const forecastLevel = forecast[index] ?? config.demandScale ?? 0;
     const demandLevel = THREE.MathUtils.clamp(
       (config.demandScale ?? 0) * 0.65 + forecastLevel * 0.35, 0, 1,
     );
-    const glowLevel = 0.18 + demandLevel * 0.6;
-    pulses.forEach((pulse) => {
-      const route = energyRoutes[pulse.userData.route];
-      const distance = ((seconds * (0.035 + demandLevel * 0.06) + pulse.userData.phase) % 1);
-      const segment = Math.min(route.length - 2, Math.floor(distance * (route.length - 1)));
-      const t = distance * (route.length - 1) - segment;
-      pulse.position.x = THREE.MathUtils.lerp(route[segment][0], route[segment + 1][0], t);
-      pulse.position.z = THREE.MathUtils.lerp(route[segment][1], route[segment + 1][1], t);
-      pulse.material.opacity = glowLevel;
-    });
+    energyNetwork?.update(delta, demandLevel);
     emissiveLights.forEach((light, indexLight) => {
       light.intensity = 0.45 + demandLevel * 2.8
         + Math.sin(seconds * 1.25 + indexLight) * (0.08 + demandLevel * 0.12);
@@ -274,6 +254,7 @@ function startScene() {
     observer.disconnect();
     controls.dispose();
     hotspots?.dispose();
+    energyNetwork?.dispose();
     canvas.removeEventListener("wheel", onWheel, true);
     disposeScene(scene);
     renderer.dispose();
