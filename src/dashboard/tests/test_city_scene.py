@@ -43,7 +43,8 @@ class CitySceneTests(unittest.TestCase):
         self.assertNotIn("ctrlKey", script)
         self.assertIn("controls.minDistance = distance", script)
         self.assertIn("controls.maxDistance = distance", script)
-        self.assertIn("window.parent.scrollBy", script)
+        self.assertIn('[data-testid="stMain"]', script)
+        self.assertIn("scroller.scrollBy", script)
         self.assertIn("removeEventListener(\"wheel\", onWheel, true)", script)
 
     def test_city_buildings_open_every_section_through_the_sidebar_keys(self):
@@ -72,7 +73,11 @@ class CitySceneTests(unittest.TestCase):
         self.assertTrue(all("uri" not in image for image in gltf["images"]))
         self.assertIn("city_glow", {material["name"] for material in gltf["materials"]})
         layout = json.loads((city_dir / "energy_city.json").read_text(encoding="utf-8"))
-        self.assertTrue(all(len(route) > 1 for route in layout["energyRoutes"].values()))
+        routes = layout["energyRoutes"]   # a few single lines, one trail each
+        self.assertTrue(2 <= len(routes) <= 5)
+        self.assertTrue(all(len(route["points"]) > 10 for route in routes))
+        starts = {tuple(route["points"][0]) for route in routes}
+        self.assertEqual(len(starts), 1)   # every line leaves the substation
         script = (city_dir / "city.js").read_text(encoding="utf-8")
         self.assertIn("./energy_city.glb", script)
         self.assertIn("./energy_city.json", script)

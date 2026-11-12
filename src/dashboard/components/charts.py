@@ -7,8 +7,17 @@ import streamlit as st
 from utils.formatting import WEEKDAYS, month_label, timestamp
 
 
-BLUE = "#4385e5"
-AMBER = "#c47d22"
+# One series palette for every chart, aligned with the dashboard tokens:
+# observed data in cyan, official REE forecasts in electric blue and the output of
+# this project's models (demand and price) in amber.
+OBSERVED = "#35d0e0"
+OFFICIAL = "#5b8cff"
+MODEL = "#f2b45a"
+REFERENCE = "#7b8798"
+BLUE = OBSERVED   # names kept for the views that already import them
+AMBER = MODEL
+FONT = ('-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", '
+        '"Segoe UI", Inter, Roboto, sans-serif')
 
 
 def base_figure(unit: str, height: int = 290) -> go.Figure:
@@ -16,28 +25,36 @@ def base_figure(unit: str, height: int = 290) -> go.Figure:
     figure.update_layout(
         height=height, margin=dict(l=8, r=12, t=24, b=38),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="-apple-system, Segoe UI, sans-serif", color="#596575", size=12),
+        font=dict(family=FONT, color="#8a96a6", size=12),
         separators=",.", showlegend=False, hovermode="closest",
-        hoverlabel=dict(bgcolor="#ffffff", font_color="#202630", font_size=13),
-        yaxis=dict(title=unit, gridcolor="rgba(120,140,170,.15)", zeroline=False,
-                   tickformat=",.0f", automargin=True, fixedrange=True),
+        hoverlabel=dict(bgcolor="rgba(16,23,32,.96)", bordercolor="rgba(255,255,255,.14)",
+                        font=dict(family=FONT, color="#e9eef5", size=12.5)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, bgcolor="rgba(0,0,0,0)",
+                    font=dict(size=12), itemsizing="constant"),
+        yaxis=dict(title=dict(text=unit, font=dict(size=11.5)), gridcolor="rgba(148,163,184,.12)",
+                   zeroline=False, tickformat=",.0f", automargin=True, fixedrange=True,
+                   showline=False, ticks=""),
+        # Spanish day/month order on date axes; category axes ignore these formats.
         xaxis=dict(showgrid=False, zeroline=False, tickangle=0, automargin=True,
-                   fixedrange=True),
+                   fixedrange=True, showline=True, linecolor="rgba(148,163,184,.18)",
+                   ticks="", tickformat="%d/%m<br>%H:%M", hoverformat="%d/%m/%Y %H:%M"),
         dragmode=False,
     )
     return figure
 
 
 def show(figure: go.Figure, key: str) -> None:
-    reset = st.button("Restablecer vista", icon=":material/restart_alt:", type="tertiary",
-                      key=f"reset_view_{key}",
-                      help="Restablece la escala predeterminada de la gráfica.")
-    figure.update_layout(uirevision=f"{key}-{int(reset)}",
-                         dragmode=figure.layout.dragmode or False)
-    st.plotly_chart(figure, width="stretch", theme=None, key=key,
-                    config={"displaylogo": False, "displayModeBar": False,
-                            "scrollZoom": False, "doubleClick": False,
-                            "responsive": True})
+    # Chart card: the reset control and the plot share one surface.
+    with st.container(key=f"plot-{key}"):
+        reset = st.button("Restablecer vista", icon=":material/restart_alt:", type="tertiary",
+                          key=f"reset_view_{key}",
+                          help="Restablece la escala predeterminada de la gráfica.")
+        figure.update_layout(uirevision=f"{key}-{int(reset)}",
+                             dragmode=figure.layout.dragmode or False)
+        st.plotly_chart(figure, width="stretch", theme=None, key=key,
+                        config={"displaylogo": False, "displayModeBar": False,
+                                "scrollZoom": False, "doubleClick": False,
+                                "responsive": True})
 
 
 def line(frame: pd.DataFrame, unit: str, key: str, color: str = BLUE,
@@ -80,7 +97,7 @@ def line(frame: pd.DataFrame, unit: str, key: str, color: str = BLUE,
                 hovertemplate=label + " · " + timestamp(row.timestamp, True)
                 + "<br>%{y:,.1f} " + unit + "<extra></extra>",
             ))
-        figure.update_layout(showlegend=True, legend=dict(orientation="h", y=1.12, x=0))
+        figure.update_layout(showlegend=True)
     show(figure, key)
 
 
@@ -89,8 +106,8 @@ def official_demand_curves(payload: dict, key: str = "official_demand_curves",
                            fallback_records: list[dict] | None = None) -> None:
     """Overlay ESIOS measured and published demand, preserving native timestamps."""
     figure = base_figure("Demanda · MW", 390)
-    series = (("real", "Demanda real — REE", BLUE, "solid"),
-              ("official_forecast", "Demanda prevista — REE", AMBER, "dash"))
+    series = (("real", "Demanda real — REE", OBSERVED, "solid"),
+              ("official_forecast", "Demanda prevista — REE", OFFICIAL, "dash"))
     any_values = False
     axis_times: list[pd.Timestamp] = []
     for key_name, label, color, dash in series:
@@ -152,17 +169,18 @@ def official_demand_curves(payload: dict, key: str = "official_demand_curves",
         figure.add_trace(go.Scattergl(
             x=prediction.timestamp_utc.dt.tz_localize(None), y=prediction.demand_mw,
             mode="lines+markers", name="Predicción del modelo",
-            line=dict(color="#8b5cf6", width=2.7, dash="dashdot"), marker=dict(size=5),
+            line=dict(color=MODEL, width=2.6, dash="dashdot"), marker=dict(size=5),
             customdata=local.map(lambda value: value.strftime("%A %d/%m/%Y %H:%M %Z")),
             hovertemplate="%{customdata}<br>Predicción del modelo · %{y:,.1f} MW"
                           "<br>Resolución: 1 hora<extra></extra>"))
         figure.add_vline(x=origin.tz_localize(None), line_dash="dot",
-                         line_color="#718096", line_width=1.5)
+                         line_color=REFERENCE, line_width=1.2)
         any_values = True
-    figure.update_layout(showlegend=True, hovermode="x unified",
-                         legend=dict(orientation="h", y=1.12, x=0), dragmode="pan")
-    figure.update_xaxes(fixedrange=False, rangeslider=dict(visible=True, thickness=0.08),
-                        title="Fecha y hora peninsular")
+    figure.update_layout(showlegend=True, hovermode="x unified", dragmode="pan")
+    figure.update_xaxes(fixedrange=False, title="Fecha y hora peninsular",
+                        rangeslider=dict(visible=True, thickness=0.07,
+                                         bgcolor="rgba(148,163,184,.06)",
+                                         bordercolor="rgba(148,163,184,.18)", borderwidth=1))
     if axis_times:
         ticks = pd.Series(pd.to_datetime(axis_times, utc=True)).drop_duplicates().sort_values()
         positions = sorted({int(index * (len(ticks) - 1) / 6) for index in range(7)})
@@ -209,7 +227,7 @@ def heatmap(frame: pd.DataFrame, weekdays: list[str]) -> None:
     figure.add_trace(go.Heatmap(
         z=matrix.to_numpy(), x=[f"{hour:02d}:00" for hour in range(24)], y=weekdays,
         customdata=counts.to_numpy(),
-        colorscale=[[0, "#dfeafb"], [0.45, "#87ade5"], [1, "#285fae"]],
+        colorscale=[[0, "#0f2530"], [0.5, "#1f7f8f"], [1, OBSERVED]],
         colorbar=dict(title="MW", orientation="h", y=-0.2, yanchor="top", thickness=9,
                       len=0.8, tickformat=",.0f", nticks=4), hoverongaps=False,
         hovertemplate="%{y} · %{x}<br>Demanda histórica · <b>%{z:,.0f} MW</b>"

@@ -1,15 +1,16 @@
-# Scoped native palettes; custom System/Claro/Oscuro uses the same tokens.
+# Native widget palettes (canvas tables, focus, checkboxes). Custom System/Claro/Oscuro
+# appearance uses the tokens in components/layout.py and styles/dashboard.css.
 [theme.light]
-primaryColor = "#078c63"
-backgroundColor = "#f6f9f7"
+primaryColor = "#0a9db0"
+backgroundColor = "#eef2f6"
 secondaryBackgroundColor = "#ffffff"
-textColor = "#17251f"
+textColor = "#0f1722"
 
 [theme.dark]
-primaryColor = "#21d18b"
-backgroundColor = "#07130f"
-secondaryBackgroundColor = "#0d1d17"
-textColor = "#e7f5ed"
+primaryColor = "#35d0e0"
+backgroundColor = "#070b11"
+secondaryBackgroundColor = "#111922"
+textColor = "#e9eef5"
 
 [server]
 enableStaticServing = true

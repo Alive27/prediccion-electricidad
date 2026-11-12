@@ -6,37 +6,53 @@
   <meta name="color-scheme" content="dark">
   <title>Ciudad energética 3D</title>
   <style>
+    /* Same tokens as the dashboard (styles/dashboard.css, dark appearance). */
+    :root {
+      --bg: #070b11; --surface: rgba(24, 33, 46, .46); --surface-2: rgba(255, 255, 255, .04);
+      --sheen: linear-gradient(180deg, rgba(255, 255, 255, .08), rgba(255, 255, 255, .015) 46%);
+      --line: rgba(255, 255, 255, .08); --line-strong: rgba(255, 255, 255, .14);
+      --ink: #e9eef5; --ink-2: #a7b2c0; --ink-3: #6f7b8b;
+      --accent: #35d0e0; --success: #3ddc97; --warning: #f2b45a; --danger: #ff6b6b;
+      --r-lg: 16px; --r-md: 12px; --ease: cubic-bezier(.2, .8, .2, 1);
+      --blur: saturate(160%) blur(22px);
+    }
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
     body {
-      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: #e7f5ed;
-      background: radial-gradient(ellipse at 48% 70%, #0c2118 0%, #06120e 60%, #040c09 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text",
+        "Segoe UI", Inter, Roboto, sans-serif;
+      color: var(--ink); -webkit-font-smoothing: antialiased;
+      background:
+        radial-gradient(ellipse 70% 55% at 55% 72%, rgba(53, 208, 224, .10), transparent 70%),
+        radial-gradient(ellipse at 50% 60%, #0c141d 0%, var(--bg) 62%, #04070b 100%);
     }
     #city { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-    .overlay { position: absolute; z-index: 2; left: 18px; right: 18px; top: 16px; pointer-events: none; }
+    .overlay { position: absolute; z-index: 2; left: 20px; right: 20px; top: 18px; pointer-events: none; }
     .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
-    .title { font-size: 10px; font-weight: 700; letter-spacing: .18em; color: #6de5a7; }
-    .sub { font-size: 11px; color: #8da99a; margin-top: 6px; }
+    .title { font-size: 11px; font-weight: 650; letter-spacing: .14em; color: var(--accent); }
+    .sub { font-size: 12px; color: var(--ink-3); margin-top: 5px; }
     .status {
-      font-size: 10px; letter-spacing: .04em; border: 1px solid #29523b; border-radius: 999px;
-      padding: 7px 11px; background: #0c2119d9; color: #68dda0; white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600;
+      border: 1px solid color-mix(in srgb, var(--success) 30%, transparent); border-radius: 999px;
+      padding: 6px 11px; background: var(--surface); color: var(--success); white-space: nowrap;
+      backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
     }
-    .status.warn { color: #f3ce7b; border-color: #66512c; }
-    .status.down { color: #ff9999; border-color: #6b3333; }
-    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-top: 13px; }
+    .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 32%, transparent); }
+    .status.down { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 32%, transparent); }
+    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
     .kpi {
-      min-width: 0; border: 1px solid #23503a99; border-radius: 13px; padding: 11px 13px;
-      background: linear-gradient(145deg, #0c2119e8, #091711d9); backdrop-filter: blur(12px);
-      box-shadow: 0 8px 28px #0005;
+      min-width: 0; border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px;
+      background: var(--sheen), var(--surface); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, .08) inset, 0 10px 30px rgba(0, 0, 0, .3);
     }
-    .kpi-label { font-size: 9px; letter-spacing: .12em; color: #8da99a; font-weight: 700; }
+    .kpi-label { font-size: 10px; letter-spacing: .1em; color: var(--ink-3); font-weight: 650; }
     .kpi-value {
-      margin-top: 7px; font-size: clamp(17px, 2.3vw, 24px); font-weight: 700;
-      letter-spacing: -.04em; color: #effff5; white-space: nowrap;
+      margin-top: 7px; font-size: clamp(18px, 2.2vw, 24px); font-weight: 650;
+      letter-spacing: -.025em; color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums;
     }
-    .kpi-value small { font-size: 10px; color: #78a68e; letter-spacing: 0; font-weight: 500; }
-    .kpi-detail { margin-top: 4px; color: #729080; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kpi-value small { font-size: 11px; color: var(--ink-3); letter-spacing: 0; font-weight: 500; }
+    .kpi-detail { margin-top: 4px; color: var(--ink-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #hotspots { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
     .hotspot {
       position: absolute; left: 0; top: 0; padding: 0; border: 0; background: none;
@@ -45,55 +61,66 @@
     .hs-body {
       position: absolute; left: 0; bottom: calc(12px + var(--lift, 0px)); transform: translateX(-50%);
       display: flex; align-items: center; gap: 9px; white-space: nowrap;
-      padding: 8px 12px 8px 10px; border-radius: 12px;
-      border: 1px solid color-mix(in srgb, var(--c) 55%, transparent);
-      background: linear-gradient(145deg, #0c2119f0, #08150fe8); backdrop-filter: blur(8px);
-      box-shadow: 0 0 0 1px #0006, 0 8px 22px #0007, 0 0 18px color-mix(in srgb, var(--c) 30%, transparent);
-      transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+      padding: 8px 10px 8px 11px; border-radius: var(--r-md);
+      border: 1px solid color-mix(in srgb, var(--c) 40%, var(--line));
+      background: rgba(12, 18, 26, .86); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, .06) inset, 0 8px 22px rgba(0, 0, 0, .4);
+      transition: transform 180ms var(--ease), box-shadow 180ms var(--ease), border-color 180ms var(--ease);
     }
     .hs-body::after {
       content: ""; position: absolute; left: 50%; top: 100%; width: 2px;
       height: calc(12px + var(--lift, 0px));
       transform: translateX(-50%); background: linear-gradient(var(--c), transparent);
     }
-    .hs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 10px var(--c); }
+    .hs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
     .hs-text { display: grid; gap: 1px; text-align: left; }
-    .hs-text strong { font-size: 11px; font-weight: 700; letter-spacing: .02em; color: #effff5; }
-    .hs-text small { font-size: 9px; color: #9db8a9; }
-    .hs-go { display: grid; color: var(--c); transition: transform 160ms ease; }
+    .hs-text strong { font-size: 12px; font-weight: 650; color: var(--ink); }
+    .hs-text small { font-size: 10.5px; color: var(--ink-2); }
+    .hs-go { display: grid; color: var(--c); transition: transform 180ms var(--ease); }
     .hs-go svg { width: 14px; height: 14px; }
     .hotspot:hover .hs-body, .hotspot.active .hs-body, .hotspot:focus-visible .hs-body {
       transform: translateX(-50%) translateY(-2px); border-color: var(--c);
-      box-shadow: 0 0 0 1px #0006, 0 10px 26px #0008, 0 0 26px color-mix(in srgb, var(--c) 55%, transparent);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, .08) inset, 0 10px 26px rgba(0, 0, 0, .45);
     }
     .hotspot:hover .hs-go, .hotspot.active .hs-go { transform: translateX(3px); }
     .hotspot:focus-visible { outline: none; }
-    @media (max-width: 680px) { .hs-text small { display: none; } .hs-body { padding: 6px 9px; } }
+    .hotspot:focus-visible .hs-body { outline: 2px solid var(--c); outline-offset: 2px; }
     #loading {
-      position: absolute; z-index: 1; inset: 50% 16px auto; text-align: center;
-      color: #6de5a7; font-size: 10px; letter-spacing: .18em; pointer-events: none;
+      position: absolute; z-index: 1; inset: 50% 16px auto; display: grid; justify-items: center; gap: 12px;
+      color: var(--ink-3); font-size: 11px; font-weight: 600; letter-spacing: .14em; pointer-events: none;
     }
+    #loading::before {
+      content: ""; width: 26px; height: 26px; border-radius: 50%;
+      border: 2px solid rgba(53, 208, 224, .18); border-top-color: var(--accent);
+      animation: spin 900ms linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .foot {
-      position: absolute; z-index: 2; bottom: 7px; left: 14px; right: 14px;
-      display: flex; justify-content: space-between; color: #688475; font-size: 8px; pointer-events: none;
+      position: absolute; z-index: 2; bottom: 9px; left: 18px; right: 18px; gap: 12px;
+      display: flex; justify-content: space-between; color: var(--ink-3); font-size: 10px; pointer-events: none;
     }
     #error {
       display: none; position: absolute; z-index: 3; inset: 44% 16px auto; text-align: center;
-      color: #d6e8dd; font-size: 13px; padding: 16px; border: 1px solid #284635;
-      border-radius: 12px; background: #091711e8;
+      color: var(--ink); font-size: 13px; padding: 16px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
+      border-radius: var(--r-md); background: rgba(16, 23, 32, .94);
     }
     @media (max-width: 680px) {
       .overlay { left: 10px; right: 10px; top: 10px; }
       .topline { flex-direction: column; gap: 8px; }
       .topline .sub { display: none; }
-      .status { white-space: normal; padding: 5px 10px; font-size: 9px; }
-      .cards { margin-top: 9px; }
+      .status { white-space: normal; padding: 5px 10px; font-size: 10px; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
+      .kpi { padding: 8px 10px; border-radius: var(--r-md); }
       .kpi-value { font-size: 17px; margin-top: 4px; }
-      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-      .kpi { padding: 8px 9px; }
-      .kpi-detail { font-size: 8px; }
-      .topline .sub { max-width: 230px; line-height: 1.4; }
-    </style>
+      .kpi-detail { font-size: 9px; }
+      .hs-text small { display: none; }
+      .hs-body { padding: 6px 9px; }
+      .foot span:last-child { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation-duration: 1ms !important; }
+    }
+  </style>
 </head>
 <body>
   <canvas id="city" aria-label="Ciudad 3D representativa de la demanda eléctrica agregada peninsular"></canvas>
@@ -117,6 +144,6 @@
   <div id="loading">CARGANDO CIUDAD 3D…</div>
   <div id="error">La escena 3D no está disponible en este navegador. Los indicadores siguen mostrando los datos de la API.</div>
   <script src="./metrics.js?v=2"></script>
-  <script type="module" src="./city.js?v=13"></script>
+  <script type="module" src="./city.js?v=17"></script>
 </body>
 </html>

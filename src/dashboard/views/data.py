@@ -192,7 +192,8 @@ def _history_panel(dataset: Dataset) -> None:
 
 
 def render(datasets: dict) -> None:
-    header("Datos", "Procedencia, conexiones y cobertura de la demanda real e histórica")
+    header("Datos", "Procedencia, conexiones y cobertura de la demanda real e histórica",
+           eyebrow="FUENTES DE DATOS")
     try:
         status = api_client.cached_status()
     except (requests.RequestException, ValueError) as error:

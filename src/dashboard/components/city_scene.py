@@ -44,5 +44,5 @@ def render_city(metrics: dict, forecast: dict | None = None) -> None:
         "navigation": {page: f"nav_{index}" for index, page in enumerate(PAGES)},
     }
     serialized = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
-    url = f"{STATIC_URL}/city/index.html?metrics={quote(serialized, safe='')}&scene=v8"
+    url = f"{STATIC_URL}/city/index.html?metrics={quote(serialized, safe='')}&scene=v12"
     st.iframe(url, height=690)
