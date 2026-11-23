@@ -132,9 +132,9 @@ def _details(frame: pd.DataFrame, model: dict) -> None:
     """Everything the summary above does not show: the model and each hour's level."""
     details = model.get("model", {}) if isinstance(model, dict) else {}
     loaded = model.get("loaded") if isinstance(model, dict) else None
+    model_name = details.get("model_type", "RandomForest").replace("Regressor", "")
     html(card(card_header("Modelo de precios", "Artefacto cargado en la API y sus entradas."),
-              grid([mini("Modelo", details.get("model_type", "RandomForest").replace("Regressor", "")
-                         if loaded is not False else "No cargado"),
+              grid([mini("Modelo", model_name if loaded is not False else "No cargado"),
                     mini("Variables", "calendario", "hora, día de la semana, mes y día"),
                     mini("Unidad", "€/kWh", "salida del modelo en €/MWh ÷ 1000"),
                     mini("Zona horaria", LOCAL_ZONE, "hora peninsular")], 4, "v-minis")))

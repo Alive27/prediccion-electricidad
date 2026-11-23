@@ -54,7 +54,7 @@ class PriceServiceTests(unittest.TestCase):
     def test_history_validates_pvpc_indicator_geo_unit_and_sorts(self):
         current_hour = pd.Timestamp.now(tz="UTC").floor("h")
         payload = {"indicator": {
-            "id": 1001, "name": "Término de facturación PVPC Península",
+            "id": 1001, "name": "Término de facturación de energía activa del PVPC 2.0TD",
             "magnitud": [{"name": "Precio", "unit": "€/MWh"}],
             "geos": [{"geo_id": 8741, "geo_name": "Península"}],
             "values": [

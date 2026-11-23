@@ -244,7 +244,7 @@ def official_demand_curves(payload: dict, key: str, prediction: pd.DataFrame | N
     colors = palette()
     figure = base_figure(360)
     series = (("real", "Demanda real — REE", colors["observed"], None),
-              ("official_forecast", "Demanda prevista — REE", colors["official"], "6px,4px"))
+              ("official_forecast", "Demanda prevista — REE", colors["official"], "dash"))
     origin = (prediction.timestamp_utc.min() - pd.Timedelta(hours=1)
               if prediction is not None and not prediction.empty else None)
     traces = []
