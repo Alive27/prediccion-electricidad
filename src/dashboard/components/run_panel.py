@@ -49,5 +49,5 @@ def generation_notice(shown: int, horizon: int, generated_utc: str | None,
 
 
 def pending(horizon: int, what: str) -> None:
-    st.info(f"Pulsa «Generar previsión» para calcular {what} de las próximas {horizon} horas con el "
-            "modelo existente.")
+    st.info(f"Pulsa «Generar previsión» para calcular {what} de las próximas {horizon} horas "
+            "con el modelo existente.")
