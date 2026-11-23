@@ -111,6 +111,22 @@ class RealDataTests(unittest.TestCase):
 
 
 class ViewTests(unittest.TestCase):
+    def test_official_curves_draw_both_ree_series(self):
+        # Regression: the dashed REE forecast line broke WebGL traces once ESIOS returned data.
+        from components import charts
+        start = pd.Timestamp.now(tz="UTC").floor("h") - pd.Timedelta(hours=6)
+        records = [{"timestamp_utc": (start + pd.Timedelta(minutes=5 * step)).isoformat(),
+                    "demand_mw": 28000.0 + step} for step in range(72)]
+        payload = {"curves": {
+            "real": {"records": records, "resolution_minutes": 5, "data_origin": "live"},
+            "official_forecast": {"records": records, "resolution_minutes": 5,
+                                  "data_origin": "live"}}}
+        with patch("components.charts.show") as show:
+            charts.official_demand_curves(payload, "test_curves")
+        figure = show.call_args.args[0]
+        self.assertEqual([trace.name for trace in figure.data],
+                         ["Demanda real — REE", "Demanda prevista — REE"])
+
     def _price_forecast(self, horizon):
         origin = pd.Timestamp.now(tz="Europe/Madrid").floor("h")
         return {
