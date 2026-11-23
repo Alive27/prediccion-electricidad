@@ -1,4 +1,4 @@
-"""Operational source status and concise 2024 historical coverage."""
+"""Datos: where the data comes from, its live state and the 2024 local history."""
 
 from html import escape
 
@@ -6,222 +6,201 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from components import charts
+from components.blocks import (card, card_header, chip, grid, html, icon_tile, mini, ornament)
 from components.cards import dataset_status
-from components.diagnostics import discard_manual
+from components.data_table import Column, table_html
 from components.icons import svg
-from components.layout import header, section
-from components.states import dataset_ready, upload_fallback
+from components.layout import header
+from components.states import dataset_ready, discard_manual, upload_fallback
 from services import api_client
 from services.data_quality import Dataset
-from utils.formatting import MONTHS, day_label, frequency, number, timestamp
+from utils.formatting import (LOCAL_TZ, MONTHS, clock, frequency, number, short_date,
+                              short_datetime)
 
-
-def _local_time(value: str | None) -> str:
-    if not value:
-        return "Sin dato"
-    stamp = pd.Timestamp(value)
-    if stamp.tzinfo is None:
-        stamp = stamp.tz_localize("UTC")
-    return timestamp(stamp, with_zone=True)
-
-
-def _html(markup: str) -> None:
-    st.markdown(markup, unsafe_allow_html=True)
+# Source and service tiles of the data flow: icon and tile colour.
+TILES = {"REData": ("tower", "#ff9500"), "Open-Meteo": ("thermo", "#ff3b30"),
+         "API FastAPI": ("server", "#0a84ff"), "Modelo": ("model", "#af52de"),
+         "Dashboard": ("display", "#30b0c7"), "Supabase": ("database", "#3ecf8e"),
+         "Local": ("database", "#8e8e93")}
 
 
 def _state(label: str, tone: str) -> str:
-    return f'<span class="state {tone}"><span class="dot {tone}"></span>{escape(label)}</span>'
+    return f'<span class="v-state {tone}"><i class="v-dot {tone}"></i>{escape(label)}</span>'
 
 
-def _pipeline(status: dict | None, dataset: Dataset) -> None:
-    """Data flow from the sources to the dashboard, with the real state of each step."""
-    def source_state(value: str | None) -> tuple[str, str]:
-        return {"connected": ("Conectada", "success"), "pending": ("Pendiente", "warning")
-                }.get(value or "", ("Sin conexión", "error"))
+def _source_state(value: str | None) -> tuple[str, str]:
+    return {"connected": ("Conectada", "success"), "pending": ("Pendiente", "warning")
+            }.get(value or "", ("Sin conexión", "error"))
 
+
+def _flow_card(status: dict | None) -> None:
     if status is None:
-        nodes = [("tower", "REData", "Demanda peninsular", "Sin datos", ""),
-                 ("thermo", "Open-Meteo", "Temperatura 2 m", "Sin datos", ""),
-                 ("server", "API FastAPI", "Servicio de predicción", "No disponible", "error"),
-                 ("model", "Modelo", "Demanda horaria", "Sin datos", ""),
-                 ("monitor", "Dashboard", "Esta aplicación", "Operativo", "success")]
+        nodes = [("REData", "Demanda peninsular", "Sin datos", "pending"),
+                 ("Open-Meteo", "Temperatura 2 m", "Sin datos", "pending"),
+                 ("API FastAPI", "Servicio de predicción", "No disponible", "error"),
+                 ("Modelo", "Demanda horaria", "Sin datos", "pending"),
+                 ("Dashboard", "Esta aplicación", "Operativo", "success")]
     else:
-        forecast = status.get("future_forecast_available")
+        model_state = (("Previsión lista", "success") if status.get("future_forecast_available")
+                       else ("Solo simulación", "warning")
+                       if status.get("historical_simulation_available") else ("Bloqueado", "error"))
         nodes = [
-            ("tower", "REData", "Demanda peninsular",
-             *source_state(status.get("demand_source_status"))),
-            ("thermo", "Open-Meteo", "Temperatura 2 m",
-             *source_state(status.get("weather_source_status"))),
-            ("server", "API FastAPI", "Servicio de predicción",
+            ("REData", "Demanda peninsular", *_source_state(status.get("demand_source_status"))),
+            ("Open-Meteo", "Temperatura 2 m", *_source_state(status.get("weather_source_status"))),
+            ("API FastAPI", "Servicio de predicción",
              *(("Operativa", "success") if status.get("api") else ("No disponible", "error"))),
-            ("model", "Modelo", "Demanda horaria",
-             *(("Previsión lista", "success") if forecast else
-               ("Solo simulación", "warning") if status.get("historical_simulation_available")
-               else ("Bloqueado", "error"))),
-            ("monitor", "Dashboard", "Esta aplicación", "Operativo", "success"),
+            ("Modelo", "Demanda horaria", *model_state),
+            ("Dashboard", "Esta aplicación", "Operativo", "success"),
         ]
-    state, tone = dataset_status(dataset)
-    items = "".join(
-        f'<div class="pipe-node {tone}"><span class="pipe-icon">{svg(icon)}</span>'
-        f'<div><strong>{escape(name)}</strong><small>{escape(detail)}</small></div>'
-        f'{_state(label, tone)}</div>'
-        for icon, name, detail, label, tone in nodes)
-    local = (f'<div class="pipe-side"><span class="pipe-icon">{svg("database")}</span>'
-             f'<div><strong>Histórico local 2024</strong><small>Parquet REData · '
-             f'gráficos históricos</small></div>{_state(state, tone)}</div>')
+    arrow = f'<span class="v-flow-a">{svg("arrow", 18, 2)}</span>'
+    flow = arrow.join(
+        f'<div class="v-node">{icon_tile(*TILES[name])}<div><b>{escape(name)}</b>'
+        f'<p>{escape(detail)}</p></div>{_state(label, tone)}</div>'
+        for name, detail, label, tone in nodes)
     try:
         tracking = api_client.cached_tracking(7)
     except (requests.RequestException, ValueError):
         tracking = {}
-    db_state = (("Conectada", "success") if tracking.get("available") else
+    database = (("Conectada", "success") if tracking.get("available") else
                 ("Sin conexión", "error") if tracking.get("configured") else
-                ("No configurada", ""))
-    database = (f'<div class="pipe-side"><span class="pipe-icon">{svg("server")}</span>'
-                f'<div><strong>Base de datos · Supabase</strong><small>Registro de '
-                f'previsiones del modelo frente a la demanda real</small></div>'
-                f'{_state(*db_state)}</div>')
-    _html(f'<div class="pipeline" role="list">{items}</div>{local}{database}')
+                ("No configurada", "pending"))
+    row = (f'<div class="v-dbrow">{icon_tile(*TILES["Supabase"], "sm")}<div class="v-grow">'
+           '<b>Base de datos · Supabase (PostgreSQL)</b><p>Registro de previsiones actuales '
+           'para el seguimiento del modelo · las simulaciones no se guardan</p></div>'
+           f'{_state(*database)}</div>')
+    html(card(card_header("Flujo de datos",
+                          "Estado real de cada fuente y servicio que alimenta el dashboard."),
+              f'<div class="v-flow">{flow}</div>', row))
 
 
-def _freshness(status: dict) -> str:
-    age = status.get("last_demand_age_hours")
-    limit = status.get("freshness_limit_hours") or 6
-    if age is None:
-        return ""
-    ratio = min(1.0, float(age) / (float(limit) * 4))
-    tone = "success" if age <= limit else "warning" if age <= limit * 4 else "error"
-    marker = 25.0     # the scale spans four times the freshness limit
-    return (
-        f'<div class="fresh"><div class="fresh-head"><span>Antigüedad del último dato</span>'
-        f'<strong class="{tone}">{number(age, 1)} h</strong></div>'
-        f'<div class="fresh-bar"><span class="{tone}" style="width:{ratio * 100:.1f}%"></span>'
-        f'<i style="left:{marker:.1f}%" title="Límite"></i></div>'
-        f'<div class="fresh-scale"><span>0 h</span><span style="left:{marker:.1f}%">'
-        f'límite {number(limit)} h</span><span>{number(limit * 4)} h</span></div></div>')
+def _recent(frame: pd.DataFrame) -> None:
+    """Latest observations as a table and as a 24-hour line."""
+    left, right = st.columns(2)
+    with left:
+        rows = [[short_date(row.timestamp_local), f"{row.timestamp_local:%H:%M}",
+                 (number(row.demand_mw), "strong")]
+                for row in frame.iloc[::-1].head(8).itertuples()]
+        html(card(card_header("Demanda actual",
+                              "Observaciones recientes consultadas a REData · unidad MW."),
+                  table_html([Column("Fecha", "40%"), Column("Hora", "25%"),
+                              Column("Demanda · MW", "35%", True)], rows,
+                             label="Demanda actual")))
+    with right:
+        charts.recent_line(frame, "data_last_24h", "Últimas 24 horas observadas",
+                           "Demanda real · REData · hora peninsular.")
 
 
-def _live_panel(status: dict) -> None:
-    value = status.get("last_demand_mw")
-    rows = [
-        ("Última consulta correcta", _local_time(status.get("demand_source_last_success_at_utc"))),
-        (
-            "Actualización indicada por REData",
-            _local_time(status.get("demand_source_updated_at_utc")),
-        ),
-        ("Último intento de consulta", _local_time(status.get("demand_source_checked_at_utc"))),
-    ]
-    kv = "".join(f'<div class="kv"><span>{escape(k)}</span><strong>{escape(v)}</strong></div>'
-                 for k, v in rows)
-    big = (f'{number(value)} <span>MW</span>' if value is not None else "Sin dato")
-    connected = status.get("demand_source_status") == "connected"
-    source = _state("Conectada", "success") if connected else _state("Sin conexión", "error")
-    _html(
-        f'<div class="info-card"><div class="info-card-head"><div><small>DEMANDA EN TIEMPO REAL'
-        f'</small><h3>REData · sistema peninsular</h3></div>{source}</div>'
-        f'<div class="big-value">{big}</div>'
-        f'<div class="big-detail">Observada {escape(_local_time(status.get("last_demand_utc")))}'
-        f'</div>{_freshness(status)}<div class="kv-list">{kv}</div></div>')
-
-
-def _readiness_panel(status: dict) -> None:
-    checks = [
-        ("Histórico de demanda para variables", status.get("historical_features_available")),
-        ("Temperatura prevista", status.get("forecast_weather_available")),
-        ("Entradas completas del modelo", status.get("model_inputs_available")),
-        ("Dato real dentro del límite", status.get("demand_fresh")),
-    ]
-    items = "".join(
-        f'<li class="{"ok" if ok else "ko"}"><span class="check">'
-        f'{svg("check" if ok else "close")}</span>'
-        f'{escape(label)}</li>' for label, ok in checks)
-    ready = status.get("future_forecast_available")
-    label, tone = (("Previsión lista", "success") if ready else
-                   ("Solo simulación histórica", "warning")
-                   if status.get("historical_simulation_available") else ("Bloqueada", "error"))
-    reason = status.get("reason")
-    note = f'<div class="info-note">{escape(reason)}</div>' if reason and not ready else ""
-    _html(
-        f'<div class="info-card"><div class="info-card-head"><div><small>PREPARACIÓN PARA PREDECIR'
-        f'</small><h3>Entradas del modelo de demanda</h3></div>{_state(label, tone)}</div>'
-        f'<ul class="checklist">{items}</ul>{note}</div>')
-
-
-def _coverage(dataset: Dataset) -> str:
+def _coverage(dataset: Dataset) -> tuple[list[str], list[float], list[str]]:
     """Monthly share of the expected hourly records present in the local Parquet."""
-    frame = dataset.frame
     step = dataset.quality.get("step") or pd.Timedelta(hours=1)
-    stamps = frame.timestamp
-    months = stamps.dt.to_period("M")
-    counts = months.value_counts().sort_index()
-    bars = []
+    stamps = dataset.frame.timestamp
+    if stamps.dt.tz is not None:
+        stamps = stamps.dt.tz_localize(None)   # months of the local (peninsular) calendar
+    counts = stamps.dt.to_period("M").value_counts().sort_index()
+    labels, shares, details = [], [], []
     for period, count in counts.items():
         expected = period.days_in_month * pd.Timedelta(days=1) / step
         share = min(1.0, count / expected) if expected else 0
-        tone = "success" if share >= 0.98 else "warning" if share >= 0.8 else "error"
-        bars.append(
-            f'<div class="cov-bar" title="{MONTHS[period.month - 1].capitalize()} '
-            f'{period.year}: {number(count)} registros ({number(share * 100, 1)} %)">'
-            f'<span class="{tone}" style="height:{max(share, 0.04) * 100:.1f}%"></span>'
-            f'<small>{MONTHS[period.month - 1][:3]}</small></div>')
-    return f'<div class="coverage" role="img" aria-label="Cobertura mensual">{"".join(bars)}</div>'
+        labels.append(MONTHS[period.month - 1][:3])
+        shares.append(share * 100)
+        details.append(f"{MONTHS[period.month - 1].capitalize()} {period.year}: "
+                       f"{number(count)} registros ({number(share * 100, 1)} %)")
+    return labels, shares, details
 
 
-def _history_panel(dataset: Dataset) -> None:
+def _history_card(dataset: Dataset) -> None:
     first, last = dataset.frame.timestamp.min(), dataset.frame.timestamp.max()
-    state, tone = dataset_status(dataset)
     issues = dataset.quality["invalid_records"] + dataset.quality["duplicate_rows"]
-    stats = [
-        ("Cobertura", f"{day_label(first)} — {day_label(last)}"),
-        ("Registros válidos", number(dataset.quality["records"])),
-        ("Frecuencia", frequency(dataset.quality["step"])),
-        ("Filas excluidas", number(issues)),
-    ]
-    stat_html = "".join(f'<div class="stat"><small>{escape(k)}</small><strong>{escape(v)}'
-                        f'</strong></div>' for k, v in stats)
-    validation = _state("Validación correcta", "success") if not issues else \
-        _state("Validación con avisos", "warning")
-    loaded_at = dataset.loaded_at.isoformat() if dataset.loaded_at else None
-    _html(
-        f'<div class="info-card"><div class="info-card-head"><div><small>HISTÓRICO LOCAL'
-        f'</small><h3>Parquet REData · demanda 2024</h3></div><div class="head-states">'
-        f'{_state(state, tone)}{validation}</div></div><div class="stat-row">{stat_html}</div>'
-        f'<div class="cov-title">Cobertura mensual de registros horarios</div>{_coverage(dataset)}'
-        f'<div class="info-note muted">Leído {escape(_local_time(loaded_at))} desde '
-        f'<code>{escape(dataset.source)}</code>. Los gráficos históricos usan este periodo 2024; '
-        f'nunca se presentan como valores actuales.</div></div>')
+    with st.container(key="plot-history-2024"):
+        html(card_header("Histórico local de 2024",
+                         "Archivo independiente de la demanda actual de REData."))
+        html(grid([
+            mini("Registros válidos", number(dataset.quality["records"]),
+                 f"Horas registradas · frecuencia {frequency(dataset.quality['step'])}"),
+            mini("Periodo local del archivo", f"{first:%d/%m/%Y} — {last:%d/%m/%Y}"),
+            mini("Filas excluidas", number(issues), "Horas repetidas o inexistentes"),
+            mini("Zona horaria", LOCAL_TZ, "Hora peninsular"),
+        ], 4, "v-minis"))
+        html('<div class="v-sub-h">Cobertura mensual</div>')
+        charts.plot(charts.coverage_figure(*_coverage(dataset)), "data_coverage")
+
+
+def _source_details(status: dict) -> None:
+    """REData query times and freshness, and the inputs the model needs."""
+    def when(field: str) -> str:
+        return short_datetime(status[field]) if status.get(field) else "Sin dato"
+
+    age, limit = status.get("last_demand_age_hours"), status.get("freshness_limit_hours") or 6
+    tone = "success" if status.get("demand_fresh") else "warning"
+    kv = "".join(f'<div class="kv"><span>{escape(label)}</span><strong>{escape(value)}'
+                 f'</strong></div>' for label, value in (
+                     ("Última consulta correcta", when("demand_source_last_success_at_utc")),
+                     ("Actualización indicada por REData", when("demand_source_updated_at_utc")),
+                     ("Último intento de consulta", when("demand_source_checked_at_utc")),
+                     ("Antigüedad del dato", f"{number(age, 1)} h · límite {number(limit)} h"
+                      if age is not None else "Sin dato")))
+    checks = [("Histórico de demanda para variables", status.get("historical_features_available")),
+              ("Temperatura prevista", status.get("forecast_weather_available")),
+              ("Entradas completas del modelo", status.get("model_inputs_available")),
+              ("Dato real dentro del límite", status.get("demand_fresh"))]
+    items = "".join(f'<li class="{"ok" if ok else "ko"}"><span class="check">'
+                    f'{svg("check" if ok else "close")}</span>{escape(label)}</li>'
+                    for label, ok in checks)
+    ready = status.get("future_forecast_available")
+    reason = status.get("reason")
+    left, right = st.columns(2)
+    with left:
+        html(card(card_header("Fuente REData", "Consultas y frescura del último dato real.",
+                              chip("Dentro del límite" if tone == "success" else "Desactualizado",
+                                   tone)),
+                  f'<div class="kv-list">{kv}</div>'))
+    with right:
+        state = (("Previsión lista", "success") if ready else
+                 ("Solo simulación histórica", "warning")
+                 if status.get("historical_simulation_available") else ("Bloqueada", "error"))
+        note = (f'<div class="info-note">{escape(reason)}</div>' if reason and not ready else "")
+        html(card(card_header("Entradas del modelo de demanda",
+                              "Lo que necesita una previsión actual.", chip(*state)),
+                  f'<ul class="checklist">{items}</ul>{note}'))
 
 
 def render(datasets: dict) -> None:
     header("Datos", "Procedencia, conexiones y cobertura de la demanda real e histórica",
-           eyebrow="FUENTES DE DATOS")
+           eyebrow="DATOS")
     try:
         status = api_client.cached_status()
     except (requests.RequestException, ValueError) as error:
         status = None
         st.warning(f"FastAPI no está disponible ({type(error).__name__}).")
-    dataset: Dataset = datasets["demand"]
+    _flow_card(status)
+    if status and status.get("source_notice"):
+        st.warning(status["source_notice"])
 
-    section("Flujo de datos", "Estado real de cada fuente y servicio que alimenta el dashboard.")
-    _pipeline(status, dataset)
+    try:
+        recent = pd.DataFrame(api_client.cached_history(24).get("records", []))
+    except requests.RequestException as error:
+        recent = pd.DataFrame()
+        st.info(f"Demanda real reciente no disponible ({type(error).__name__}).")
+    if not recent.empty:
+        recent["timestamp_utc"] = pd.to_datetime(recent.timestamp_utc, utc=True)
+        recent["demand_mw"] = pd.to_numeric(recent.demand_mw, errors="coerce")
+        recent["timestamp_local"] = recent.timestamp_utc.dt.tz_convert(LOCAL_TZ)
+        _recent(recent.dropna(subset=["demand_mw"]))
 
-    section("Demanda actual", "Observaciones recientes consultadas a REData · unidad MW.")
-    if status is not None:
-        if status.get("source_notice"):
-            st.warning(status["source_notice"])
-        live, ready = st.columns([1.15, 1])
-        with live:
-            _live_panel(status)
-        with ready:
-            _readiness_panel(status)
-    else:
-        st.info("La procedencia y frescura se mostrarán al reconectar la API.")
-
-    section("Histórico local de 2024", "Archivo independiente de la demanda actual de REData.")
-    dataset = upload_fallback(dataset)
-    if not dataset_ready(dataset):
-        return
-    _history_panel(dataset)
-    if dataset.source == "Carga manual · solo en memoria":
-        st.button("Retirar histórico temporal", key="discard_demand",
-                  type="tertiary", icon=":material/close:",
-                  on_click=discard_manual, args=("demand",))
+    dataset: Dataset = upload_fallback(datasets["demand"])
+    if dataset_ready(dataset):
+        _history_card(dataset)
+        state, tone = dataset_status(dataset)
+        html(card(card_header("Archivo local", f"Leído desde {dataset.source}.",
+                              chip(state, tone)),
+                  '<p class="v-foot">Los gráficos históricos usan el periodo 2024; nunca se '
+                  'presentan como valores actuales.</p>'))
+        if dataset.source == "Carga manual · solo en memoria":
+            st.button("Retirar histórico temporal", key="discard_demand", type="tertiary",
+                      icon=":material/close:", on_click=discard_manual, args=("demand",))
+    if status:
+        _source_details(status)
+        checked = status.get("demand_source_checked_at_utc")
+        html(ornament(f"Última comprobación · {clock(checked)}" if checked
+                      else "Sin comprobación reciente", icon="clock"))

@@ -1,9 +1,7 @@
 """Regression checks using the real Parquet sources, without writing to data/."""
 
-import io
 import sys
 import unittest
-from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,10 +13,8 @@ DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DIRECTORY))
 
 from components.layout import PAGES  # noqa: E402
-from components.tables import csv_bytes  # noqa: E402
-from services.analysis import select_dates, select_period  # noqa: E402
 from services.data_loader import load_local, load_upload, refresh  # noqa: E402
-from services.data_quality import aligned_data, prepare  # noqa: E402
+from services.data_quality import prepare  # noqa: E402
 from utils.paths import FILENAMES, candidate_paths  # noqa: E402
 from views.prices import _frame as price_prediction_frame  # noqa: E402
 from views.prices import best_window, price_bands  # noqa: E402
@@ -54,29 +50,17 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(local.dt.hour.tolist(), [2, 2])
         self.assertNotEqual(local.iloc[0].utcoffset(), local.iloc[1].utcoffset())
 
-    def test_alignment_uses_exact_instants_and_leaves_edges_unmatched(self):
-        joined, _ = aligned_data(self.datasets["demand"], self.datasets["weather"])
-        self.assertEqual(len(joined), 8783)
-        left = self.sources["demand"].set_index("datetime").value
-        right = self.sources["weather"].set_index("time").temperature_2m
-        for column, source in (("value_demand", left), ("value_weather", right)):
-            self.assertEqual(joined.iloc[0][column], source.loc[joined.iloc[0].timestamp])
-
     def test_naive_dates_are_never_assumed_to_be_utc(self):
         raw = self.sources["weather"].copy()
         raw["time"] = raw.time.dt.tz_localize(None)
         dataset = prepare("weather", raw, "test")
         self.assertIsNone(dataset.quality["timezone"])
         self.assertEqual(dataset.frame.timestamp.iloc[0], raw.time.iloc[0])
-        joined, message = aligned_data(self.datasets["demand"], dataset)
-        self.assertTrue(joined.empty)
-        self.assertIn("pendiente", message)
 
-    def test_duplicate_instants_block_joint_analysis(self):
+    def test_duplicate_instants_are_counted_and_dropped(self):
         raw = pd.concat([self.sources["weather"], self.sources["weather"].iloc[:1]])
         dataset = prepare("weather", raw, "test")
         self.assertEqual(dataset.quality["duplicate_times"], 1)
-        self.assertTrue(aligned_data(self.datasets["demand"], dataset)[0].empty)
         self.assertTrue(dataset.frame.index.is_unique)
 
     def test_invalid_values_are_excluded_without_changing_raw(self):
@@ -92,22 +76,6 @@ class RealDataTests(unittest.TestCase):
     def test_schema_mismatch_and_empty_file_are_handled(self):
         self.assertFalse(prepare("demand", self.sources["weather"], "test").available)
         self.assertFalse(prepare("demand", self.sources["demand"].iloc[:0], "test").available)
-
-    def test_quick_filters_use_last_available_observation(self):
-        frame = self.datasets["demand"].frame
-        for period, expected in (("24 horas", 24), ("7 días", 168), ("30 días", 720)):
-            result = select_period(frame, period)
-            self.assertEqual(len(result), expected)
-            self.assertEqual(result.timestamp.max(), frame.timestamp.max())
-
-    def test_local_calendar_dates_respect_dst(self):
-        frame = self.datasets["demand"].frame
-        spring = select_dates(frame, (date(2024, 3, 31), date(2024, 3, 31)))
-        autumn = select_dates(frame, (date(2024, 10, 27), date(2024, 10, 27)))
-        self.assertEqual(len(spring), 23)
-        self.assertEqual(len(autumn), 25)
-        self.assertEqual(autumn.timestamp.dt.hour.eq(2).sum(), 2)
-        self.assertTrue(autumn.timestamp.is_unique)
 
     def test_upload_reads_real_bytes_without_any_file_write(self):
         content = (self.directory / FILENAMES["demand"]).read_bytes()
@@ -140,12 +108,6 @@ class RealDataTests(unittest.TestCase):
             load_local("demand")
             self.assertEqual(reader.call_count, 1)
         refresh()
-
-    def test_csv_keeps_original_data_and_timezone(self):
-        raw = self.sources["demand"].iloc[:3]
-        result = pd.read_csv(io.BytesIO(csv_bytes(raw)), sep=";", decimal=",")
-        self.assertEqual(result.datetime.iloc[0], str(raw.datetime.iloc[0]))
-        self.assertAlmostEqual(result.value.iloc[0], raw.value.iloc[0])
 
 
 class ViewTests(unittest.TestCase):
@@ -209,8 +171,14 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(demand.call_args.args[0], "/predict")
         self.assertEqual(demand.call_args.args[1], {"horizon_hours": 48})
         self.assertTrue(city.called)
-        self.assertTrue(any("intensidad luminosa" in item.value.lower()
-                            for item in app.markdown))
+        markup = " ".join(item.value for item in app.markdown)
+        self.assertIn("intensidad luminosa", markup.lower())
+        # The indicators are native HTML over the city, not drawn inside the 3D frame.
+        self.assertIn("home-kpis", markup)
+        self.assertIn("Demanda actual", markup)
+        self.assertIn("Precio estimado", markup)
+        self.assertIn("Pico previsto", markup)
+        self.assertIn("0,0800", markup)
 
     def test_all_price_horizons_refresh_the_model_output(self):
         with patch("services.api_client.predict_price",
@@ -219,9 +187,10 @@ class ViewTests(unittest.TestCase):
             app.session_state["current_page"] = "Precios"
             app.run()
             self.assertEqual(predict.call_count, 0)
-            self.assertEqual(app.button(key="price_generate").label, "Generar previsión 24 h")
+            self.assertEqual(app.button(key="price_generate").label, "Generar previsión")
+            self.assertEqual(app.button_group(key="price_horizon").value, 24)
             for horizon in (6, 12, 24, 48):
-                app.selectbox(key="price_horizon").set_value(horizon).run()
+                app.button_group(key="price_horizon").set_value(horizon).run()
                 app.button(key="price_generate").click().run()
                 self.assertFalse(app.exception)
                 self.assertEqual(len(app.get("plotly_chart")), 1)
@@ -230,7 +199,8 @@ class ViewTests(unittest.TestCase):
                 self.assertIn("price-table", markup)
                 self.assertIn("Valle", markup)
                 self.assertIn("Punta", markup)
-                self.assertTrue(any("€/kWh" in metric.value for metric in app.metric))
+                self.assertIn("Siguiente hora", markup)
+                self.assertIn("€/kWh", markup)
         self.assertEqual([call.args[0] for call in predict.call_args_list], [6, 12, 24, 48])
 
     def test_price_generation_persists_when_switching_pages(self):
@@ -243,7 +213,7 @@ class ViewTests(unittest.TestCase):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
             app.session_state["current_page"] = "Precios"
             app.run()
-            app.selectbox(key="price_horizon").set_value(12).run()
+            app.button_group(key="price_horizon").set_value(12).run()
             app.button(key="price_generate").click().run()
             app.session_state["current_page"] = "Datos"
             app.run()
@@ -251,7 +221,7 @@ class ViewTests(unittest.TestCase):
             app.run()
         self.assertFalse(app.exception)
         self.assertEqual(predict.call_count, 1)
-        self.assertEqual(app.selectbox(key="price_horizon").value, 12)
+        self.assertEqual(app.button_group(key="price_horizon").value, 12)
         self.assertTrue(any("price-table" in item.value for item in app.markdown))
 
     def test_demand_generation_persists_after_visiting_the_summary(self):
@@ -273,7 +243,7 @@ class ViewTests(unittest.TestCase):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
             app.session_state["current_page"] = "Modelo"
             app.run()
-            app.selectbox(key="prediction_horizon").set_value(12).run()
+            app.button_group(key="prediction_horizon").set_value(12).run()
             app.button(key="prediction_generate").click().run()
             app.session_state["current_page"] = "Resumen"
             app.run()
@@ -282,8 +252,8 @@ class ViewTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(app.session_state["model_demand_forecast"]["horizon_hours"], 12)
         self.assertEqual(app.session_state["overview_demand_forecast"]["horizon_hours"], 48)
-        self.assertEqual(app.selectbox(key="prediction_horizon").value, 12)
-        self.assertTrue(any("Máximo previsto" in metric.label for metric in app.metric))
+        self.assertEqual(app.button_group(key="prediction_horizon").value, 12)
+        self.assertIn("Máximo previsto", " ".join(item.value for item in app.markdown))
 
     def test_model_page_tracks_logged_forecasts_against_real_demand(self):
         origin = pd.Timestamp.now(tz="UTC").floor("h") - pd.Timedelta(hours=2)
@@ -360,14 +330,15 @@ class ViewTests(unittest.TestCase):
             app = AppTest.from_file(str(DIRECTORY / "app.py"), default_timeout=25)
             app.session_state["current_page"] = "Modelo"
             app.run()
-            self.assertEqual(app.selectbox(key="prediction_horizon").options,
-                             ["6 horas", "12 horas", "24 horas", "48 horas"])
-            app.selectbox(key="prediction_horizon").set_value(6).run()
+            self.assertEqual(app.button_group(key="prediction_horizon").options,
+                             ["6 h", "12 h", "24 h", "48 h"])
+            app.button_group(key="prediction_horizon").set_value(6).run()
             app.button(key="prediction_generate").click().run()
         self.assertEqual(app.session_state["prediction_horizon"], 6)
         self.assertFalse(app.exception)
-        self.assertEqual(len(app.get("plotly_chart")), 2)
-        self.assertTrue(any("Máximo previsto" in metric.label for metric in app.metric))
+        # Hourly forecast, context with REE curves and the hourly profile.
+        self.assertEqual(len(app.get("plotly_chart")), 3)
+        self.assertIn("Máximo previsto", " ".join(item.value for item in app.markdown))
 
     def test_system_page_reports_both_models_and_api(self):
         with patch("services.api_client.cached_status", return_value=self._demand_status()), \

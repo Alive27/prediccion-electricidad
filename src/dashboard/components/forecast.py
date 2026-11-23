@@ -1,12 +1,10 @@
-"""Shared executive forecast metrics and a deliberately split time-series chart."""
+"""Demand forecast payloads: parsing, freshness and the observed-versus-simulated chart."""
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import streamlit as st
 
-from components.charts import MODEL, OBSERVED, REFERENCE, base_figure, show as show_chart
-from utils.formatting import number
+from components.charts import base_figure, palette, show
 
 
 LOCAL_ZONE = "Europe/Madrid"
@@ -24,93 +22,37 @@ def prediction_frame(forecast: dict) -> pd.DataFrame:
     return frame
 
 
-def render_summary(forecast: dict, frame: pd.DataFrame) -> None:
-    if frame.empty:
-        st.warning("La API no devolvió valores finitos para este horizonte.")
-        return
-    peak = frame.loc[frame.demand_mw.idxmax()]
-    valley = frame.loc[frame.demand_mw.idxmin()]
-    origin = pd.Timestamp(forecast["forecast_origin_utc"]).tz_convert(LOCAL_ZONE)
-    generated = pd.Timestamp(forecast["generated_at_utc"]).tz_convert(LOCAL_ZONE)
-    cols = st.columns(5)
-    simulation = forecast.get("prediction_mode") == "historical_simulation"
-    mode_label = "Simulación" if simulation else "Previsto"
-    cols[0].metric(f"Máximo {mode_label.lower()}", f"{number(peak.demand_mw)} MW",
-                   peak.timestamp_local.strftime("%d/%m %H:%M · hora local"))
-    cols[1].metric(f"Mínimo {mode_label.lower()}", f"{number(valley.demand_mw)} MW",
-                   valley.timestamp_local.strftime("%d/%m %H:%M · hora local"))
-    cols[2].metric(f"Rango {mode_label.lower()}", f"{number(peak.demand_mw - valley.demand_mw)} MW",
-                   "máximo menos mínimo")
-    cols[3].metric("Referencia de simulación" if simulation else "Origen real",
-                   origin.strftime("%d/%m %H:%M"), "Europe/Madrid")
-    cols[4].metric("Horizonte / modelo", f"{len(frame)} h", forecast.get("model", "—"))
-    st.caption(f"Generada el {generated:%d/%m/%Y %H:%M} · hora Europe/Madrid · "
-               f"origen UTC {forecast['forecast_origin_utc']} · unidad MW")
-    if simulation:
-        reference = pd.Timestamp(forecast["simulation_reference_utc"]).tz_convert(LOCAL_ZONE)
-        horizon = forecast.get("horizon_hours", len(frame))
-        st.warning(f"SIMULACIÓN HISTÓRICA: no representa las próximas {horizon} horas actuales. "
-                   f"Referencia: {reference:%d/%m/%Y %H:%M %Z}; "
-                   f"temperatura: {forecast.get('weather_input', 'histórica')}.")
-
-
 def render_timeline(history_records: list[dict], forecast: dict,
                     predictions: pd.DataFrame, key: str) -> None:
-    figure = base_figure("Demanda · MW", 430)
+    """Observed demand up to the reference instant, then the historical simulation."""
+    colors = palette()
+    figure = base_figure(360)
     origin = pd.Timestamp(forecast["forecast_origin_utc"])
-    if history_records:
-        observed = pd.DataFrame(history_records)
+    observed = pd.DataFrame(history_records)
+    keys = []
+    if not observed.empty:
         observed["timestamp_utc"] = pd.to_datetime(observed.timestamp_utc, utc=True)
         observed["demand_mw"] = pd.to_numeric(observed.demand_mw, errors="coerce")
-        observed = observed.loc[
-            observed.timestamp_utc.le(origin) & np.isfinite(observed.demand_mw)
-        ].tail(168)
-        if not observed.empty:
-            local = observed.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
-            axis = observed.timestamp_utc.dt.tz_convert("UTC").dt.tz_localize(None)
-            custom = [[time.strftime("%d/%m/%Y %H:%M %Z"), utc.isoformat()]
-                      for time, utc in zip(local, observed.timestamp_utc)]
-            figure.add_trace(go.Scatter(
-                x=axis, y=observed.demand_mw, mode="lines", name="Demanda observada",
-                line={"color": OBSERVED, "width": 2.4},
-                customdata=custom,
-                hovertemplate="%{customdata[0]} (Europe/Madrid)<br>UTC %{customdata[1]}<br>"
-                              "Demanda real · <b>%{y:,.0f} MW</b><extra></extra>",
-            ))
-    local_forecast = predictions.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
+        observed = observed.loc[observed.timestamp_utc.le(origin)
+                                & np.isfinite(observed.demand_mw)].tail(168)
+        local = observed.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
+        figure.add_trace(go.Scatter(
+            x=local.dt.tz_localize(None), y=observed.demand_mw, mode="lines",
+            name="Demanda observada", line={"color": colors["observed"], "width": 2},
+            hovertemplate="Demanda real · <b>%{y:,.0f} MW</b><extra></extra>"))
+        keys.append((colors["observed"], "Demanda observada", "line"))
+    local = predictions.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
     figure.add_trace(go.Scatter(
-        x=predictions.timestamp_utc.dt.tz_convert("UTC").dt.tz_localize(None),
-        y=predictions.demand_mw,
-        mode="lines+markers",
-        name=("Simulación histórica" if forecast.get("prediction_mode") ==
-              "historical_simulation" else "Previsión"),
-        line={"color": MODEL, "width": 2.6, "dash": "dash"},
-        marker={"size": 5},
-        customdata=[[time.strftime("%d/%m/%Y %H:%M %Z"), utc.isoformat()]
-                    for time, utc in zip(local_forecast, predictions.timestamp_utc)],
-        hovertemplate="%{customdata[0]} (Europe/Madrid)<br>UTC %{customdata[1]}<br>"
-                      "Demanda estimada · <b>%{y:,.0f} MW</b><extra></extra>",
-    ))
-    origin_axis = origin.tz_convert("UTC").tz_localize(None)
-    figure.add_vline(x=origin_axis, line_dash="dot", line_color=REFERENCE, line_width=1.2)
-    figure.add_annotation(x=origin_axis, y=1, yref="paper", text=(
-        "Referencia de simulación" if forecast.get("prediction_mode") ==
-        "historical_simulation" else "Última demanda real"),
-                          showarrow=False, xanchor="left", yanchor="bottom",
-                          font={"size": 11, "color": REFERENCE})
-    tick_times = pd.concat([
-        observed.timestamp_utc if history_records else pd.Series(dtype="datetime64[ns, UTC]"),
-        predictions.timestamp_utc,
-    ]).drop_duplicates().sort_values()
-    tick_times = tick_times.iloc[::max(1, len(tick_times) // 7)]
-    figure.update_xaxes(
-        title="Hora peninsular · Europe/Madrid", showgrid=False,
-        tickvals=tick_times.dt.tz_convert("UTC").dt.tz_localize(None),
-        ticktext=tick_times.dt.tz_convert(LOCAL_ZONE).dt.strftime("%d/%m %H:%M %Z"),
-    )
-    figure.update_layout(showlegend=True, legend={"orientation": "h", "y": 1.12},
-                         hovermode="x unified")
-    show_chart(figure, key)
+        x=local.dt.tz_localize(None), y=predictions.demand_mw, mode="lines",
+        name="Simulación histórica", line={"color": colors["model"], "width": 2.5},
+        hovertemplate="Demanda simulada · <b>%{y:,.0f} MW</b><extra></extra>"))
+    keys.append((colors["model"], "Simulación histórica", "line"))
+    origin_axis = origin.tz_convert(LOCAL_ZONE).tz_localize(None)
+    figure.add_vline(x=origin_axis, line_dash="dot", line_color=colors["reference"],
+                     line_width=1.2)
+    figure.update_xaxes(tickformat="%d/%m<br>%H:%M")
+    show(figure, key, "Contexto de la simulación",
+         "Demanda observada hasta la referencia y salida simulada después · MW.", keys)
 
 
 def is_current(forecast: dict, latest_observation_utc: str | None = None) -> bool:

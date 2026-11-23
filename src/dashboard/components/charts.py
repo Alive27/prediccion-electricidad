@@ -1,261 +1,299 @@
-"""Consistent Plotly visuals. Dates retain exact instants across DST changes."""
+"""Plotly charts in the "Vision" style. Times are peninsular local time; DST is preserved."""
+
+import math
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils.formatting import WEEKDAYS, month_label, timestamp
+from components.blocks import card_header, html, legend
+from utils.formatting import number, short_date
 
-
-# One series palette for every chart, aligned with the dashboard tokens:
-# observed data in cyan, official REE forecasts in electric blue and the output of
-# this project's models (demand and price) in amber.
-OBSERVED = "#35d0e0"
-OFFICIAL = "#5b8cff"
-MODEL = "#f2b45a"
-REFERENCE = "#7b8798"
-BLUE = OBSERVED   # names kept for the views that already import them
-AMBER = MODEL
-FONT = ('-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", '
+LOCAL_ZONE = "Europe/Madrid"
+FONT = ('-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Segoe UI Variable Text", '
         '"Segoe UI", Inter, Roboto, sans-serif')
+# Plotly paints series colours itself, so CSS tokens cannot reach them: one palette per
+# appearance. Model output in cyan, observed data in white (ink), references dashed.
+_PALETTES = {
+    "dark": {"model": "#64d2ff", "observed": "#ffffff", "reference": "rgba(255,255,255,.5)",
+             "official": "#9d8cff", "valle": "#30d158", "llano": "#ffd60a", "punta": "#ff6961",
+             "annotation": "#ffffff", "annotation_ink": "#0b1016", "marker": "#2a3038"},
+    "light": {"model": "#0a84ff", "observed": "#0b1220", "reference": "rgba(11,18,32,.42)",
+              "official": "#6b5ce7", "valle": "#1f9d4f", "llano": "#d99a00", "punta": "#e0453a",
+              "annotation": "#0b1220", "annotation_ink": "#ffffff", "marker": "#ffffff"},
+}
 
 
-def base_figure(unit: str, height: int = 290) -> go.Figure:
+def palette() -> dict:
+    return _PALETTES["light" if st.session_state.get("appearance") == "Claro" else "dark"]
+
+
+def _rgba(color: str, alpha: float) -> str:
+    color = color.lstrip("#")
+    red, green, blue = (int(color[index:index + 2], 16) for index in (0, 2, 4))
+    return f"rgba({red},{green},{blue},{alpha})"
+
+
+def nice_ticks(low: float, high: float, count: int = 4) -> list[float]:
+    """Round axis ticks that cover [low, high] in about `count` steps."""
+    if not math.isfinite(low) or not math.isfinite(high) or high <= low:
+        return [low]
+    raw = (high - low) / count
+    magnitude = 10 ** math.floor(math.log10(raw))
+    step = next(factor * magnitude for factor in (1, 2, 2.5, 4, 5, 10)
+                if factor * magnitude >= raw)
+    start = math.floor(low / step) * step
+    stop = math.ceil(high / step) * step
+    return [start + index * step for index in range(int(round((stop - start) / step)) + 1)]
+
+
+def base_figure(height: int = 300, y_ticks: list[float] | None = None,
+                y_format: str = ",.0f", y_suffix: str = "") -> go.Figure:
     figure = go.Figure()
     figure.update_layout(
-        height=height, margin=dict(l=8, r=12, t=24, b=38),
+        height=height, margin=dict(l=2, r=6, t=12, b=2),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=FONT, color="#8a96a6", size=12),
-        separators=",.", showlegend=False, hovermode="closest",
-        hoverlabel=dict(bgcolor="rgba(16,23,32,.96)", bordercolor="rgba(255,255,255,.14)",
-                        font=dict(family=FONT, color="#e9eef5", size=12.5)),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, bgcolor="rgba(0,0,0,0)",
-                    font=dict(size=12), itemsizing="constant"),
-        yaxis=dict(title=dict(text=unit, font=dict(size=11.5)), gridcolor="rgba(148,163,184,.12)",
-                   zeroline=False, tickformat=",.0f", automargin=True, fixedrange=True,
-                   showline=False, ticks=""),
-        # Spanish day/month order on date axes; category axes ignore these formats.
-        xaxis=dict(showgrid=False, zeroline=False, tickangle=0, automargin=True,
-                   fixedrange=True, showline=True, linecolor="rgba(148,163,184,.18)",
-                   ticks="", tickformat="%d/%m<br>%H:%M", hoverformat="%d/%m/%Y %H:%M"),
-        dragmode=False,
+        font=dict(family=FONT, color="#8b939e", size=10.5),
+        separators=",.", showlegend=False, hovermode="x unified", dragmode=False,
+        hoverlabel=dict(bgcolor="rgba(30,35,43,.96)", bordercolor="rgba(255,255,255,.16)",
+                        font=dict(family=FONT, color="#ffffff", size=12)),
+        yaxis=dict(gridcolor="rgba(255,255,255,.1)", zeroline=False, tickformat=y_format,
+                   ticksuffix=y_suffix, fixedrange=True, showline=False, ticks="",
+                   automargin=True, title=None),
+        xaxis=dict(showgrid=False, zeroline=False, showline=False, ticks="", tickangle=0,
+                   fixedrange=True, automargin=True, title=None, ticklabelstandoff=8),
     )
+    if y_ticks:
+        figure.update_yaxes(range=[y_ticks[0], y_ticks[-1]], tickvals=y_ticks)
+        if y_suffix:   # Plotly drops ticksuffix when the tick values are explicit
+            figure.update_yaxes(ticktext=[f"{number(value)}{y_suffix}" for value in y_ticks])
     return figure
 
 
-def show(figure: go.Figure, key: str) -> None:
-    # Chart card: the reset control and the plot share one surface.
+def show(figure: go.Figure, key: str, title: str = "", subtitle: str = "",
+         keys: list[tuple[str, str, str]] | None = None, reset: bool = False) -> None:
+    """Chart card: optional header with a legend on the right, then the plot."""
     with st.container(key=f"plot-{key}"):
-        reset = st.button("Restablecer vista", icon=":material/restart_alt:", type="tertiary",
-                          key=f"reset_view_{key}",
-                          help="Restablece la escala predeterminada de la gráfica.")
-        figure.update_layout(uirevision=f"{key}-{int(reset)}",
-                             dragmode=figure.layout.dragmode or False)
-        st.plotly_chart(figure, width="stretch", theme=None, key=key,
-                        config={"displaylogo": False, "displayModeBar": False,
-                                "scrollZoom": False, "doubleClick": False,
-                                "responsive": True})
+        if title:
+            html(card_header(title, subtitle, legend(keys) if keys else ""))
+        if reset:
+            # Only charts that can be panned need a way back to the default view.
+            clicked = st.button("Restablecer vista", icon=":material/restart_alt:",
+                                type="tertiary", key=f"reset_view_{key}")
+            figure.update_layout(uirevision=f"{key}-{int(clicked)}")
+        plot(figure, key)
 
 
-def line(frame: pd.DataFrame, unit: str, key: str, color: str = BLUE,
-         extrema: bool = False, height: int = 330) -> None:
-    figure = base_figure(unit, height)
-    figure.update_layout(dragmode="pan")
-    figure.update_xaxes(fixedrange=False)
-    figure.update_yaxes(fixedrange=False)
-    times = frame.timestamp
-    x = times.dt.tz_convert("UTC").dt.tz_localize(None) if times.dt.tz else times
-    labels = [timestamp(value, with_zone=True) for value in times]
-    plot = pd.DataFrame({"x": x, "value": frame.value, "label": labels})
-    deltas = x.diff().dropna()
-    deltas = deltas.loc[deltas.gt(pd.Timedelta(0))]
-    if not deltas.empty:
-        step = deltas.mode().iloc[0]
-        gaps = plot.loc[x.diff().gt(step)].copy()
-        if not gaps.empty:
-            gaps["x"] = gaps.x - step / 2
-            gaps["value"] = float("nan")
-            plot = pd.concat([plot, gaps]).sort_values("x")
+def _time_ticks(stamps: pd.Series, every: int, fmt: str = "%H:%M") -> dict:
+    selected = stamps.iloc[::max(1, every)]
+    return dict(tickvals=selected.dt.tz_localize(None), ticktext=selected.dt.strftime(fmt))
+
+
+def _area_line(figure: go.Figure, x, y, color: str, low: float, high: float, name: str,
+               hover: list[str], alpha: float = .22, width: float = 2.5) -> None:
     figure.add_trace(go.Scatter(
-        x=plot.x, y=plot.value, customdata=plot.label, mode="lines", connectgaps=False,
-        name="Demanda observada" if unit == "MW" else "Temperatura histórica",
-        line=dict(color=color, width=2.4),
-        hovertemplate="%{customdata}<br>Demanda histórica · <b>%{y:,.1f} "
-        + unit + "</b><extra></extra>",
-    ))
-    positions = sorted({int(i * (len(frame) - 1) / 5) for i in range(6)})
-    ticktext = [times.iloc[i].strftime("%d/%m<br>%H:%M") for i in positions]
-    figure.update_xaxes(tickvals=[x.iloc[i] for i in positions], ticktext=ticktext)
-    if extrema:
-        for label, index, symbol in (("Máximo", frame.value.idxmax(), "triangle-up"),
-                                     ("Mínimo", frame.value.idxmin(), "triangle-down")):
-            row = frame.loc[index]
-            figure.add_trace(go.Scatter(
-                x=[x.loc[index]], y=[row.value], mode="markers", name=label,
-                marker=dict(color=color, size=11, symbol=symbol,
-                            line=dict(color="white", width=1)),
-                hovertemplate=label + " · " + timestamp(row.timestamp, True)
-                + "<br>%{y:,.1f} " + unit + "<extra></extra>",
-            ))
-        figure.update_layout(showlegend=True)
-    show(figure, key)
+        x=x, y=y, mode="lines", name=name, line=dict(color=color, width=width, shape="spline",
+                                                     smoothing=.6),
+        fill="tozeroy", fillgradient=dict(
+            type="vertical", start=low, stop=high,
+            colorscale=[[0, _rgba(color, 0)], [1, _rgba(color, alpha)]]),
+        customdata=hover, hovertemplate="%{customdata}<br>" + name
+        + " · <b>%{y:,.0f} MW</b><extra></extra>"))
 
 
-def official_demand_curves(payload: dict, key: str = "official_demand_curves",
-                           prediction: pd.DataFrame | None = None,
+def forecast_chart(frame: pd.DataFrame, previous: pd.Series | None, key: str,
+                   simulation: bool = False) -> None:
+    """Hourly model output with the previous day's observed demand and the peak marked."""
+    colors = palette()
+    name = "Simulación · MW" if simulation else "Previsión · MW"
+    local = frame.timestamp_local
+    x = local.dt.tz_localize(None)
+    values = list(frame.demand_mw) + ([] if previous is None else list(previous.dropna()))
+    ticks = nice_ticks(min(values), max(values))
+    figure = base_figure(300, ticks)
+    keys = [(colors["model"], name, "line")]
+    if previous is not None and previous.notna().any():
+        figure.add_trace(go.Scatter(
+            x=x, y=previous, mode="lines", name="Día anterior observado · MW",
+            line=dict(color=colors["reference"], width=2, dash="5px,5px", shape="spline",
+                      smoothing=.6),
+            hovertemplate="Día anterior · %{y:,.0f} MW<extra></extra>"))
+        keys.append((colors["reference"], "Día anterior observado · MW", "dash"))
+    hover = [f"{short_date(stamp)} · {stamp:%H:%M}" for stamp in local]
+    _area_line(figure, x, frame.demand_mw, colors["model"], ticks[0], ticks[-1], name, hover)
+    peak = frame.demand_mw.idxmax()
+    figure.add_trace(go.Scatter(
+        x=[x.loc[peak]], y=[frame.demand_mw.loc[peak]], mode="markers", hoverinfo="skip",
+        marker=dict(size=9, color=colors["marker"], line=dict(color=colors["model"], width=2.5))))
+    figure.add_annotation(
+        x=x.loc[peak], y=frame.demand_mw.loc[peak], yshift=20, showarrow=False,
+        text=f"<b>Máx. {number(frame.demand_mw.loc[peak])} MW · {local.loc[peak]:%H:%M}</b>",
+        bgcolor=colors["annotation"], bordercolor=colors["annotation"], borderpad=5,
+        font=dict(color=colors["annotation_ink"], size=11.5))
+    figure.update_xaxes(**_time_ticks(local, 2 if len(frame) <= 24 else 4))
+    show(figure, key, "Simulación horaria" if simulation else "Previsión horaria",
+         "Salida horaria del modelo de demanda · MW · hora peninsular.", keys)
+
+
+def plot(figure: go.Figure, key: str) -> None:
+    """A chart inside a card the caller already opened."""
+    st.plotly_chart(figure, width="stretch", theme=None, key=key,
+                    config={"displaylogo": False, "displayModeBar": False,
+                            "scrollZoom": False, "doubleClick": False, "responsive": True})
+
+
+def tracking_keys() -> list[tuple[str, str, str]]:
+    colors = palette()
+    return [(colors["model"], "Previsión registrada", "dash"),
+            (colors["observed"], "Demanda real · REData", "line")]
+
+
+def tracking_figure(frame: pd.DataFrame) -> go.Figure:
+    """Logged forecasts (dashed) against the real demand published afterwards."""
+    colors = palette()
+    local = frame.timestamp_local
+    x = local.dt.tz_localize(None)
+    values = pd.concat([frame.actual_mw, frame.predicted_mw]).dropna()
+    ticks = nice_ticks(values.min(), values.max(), 2)
+    figure = base_figure(220, ticks)
+    for column, name, color, dash in (
+            ("actual_mw", "Demanda real · REData", colors["observed"], None),
+            ("predicted_mw", "Previsión registrada", colors["model"], "4px,4px")):
+        figure.add_trace(go.Scatter(
+            x=x, y=frame[column], mode="lines", name=name, connectgaps=False,
+            line=dict(color=color, width=1.8, dash=dash, shape="spline", smoothing=.5),
+            hovertemplate=name + " · %{y:,.0f} MW<extra></extra>"))
+    marks = local.loc[local.dt.minute.eq(0) & local.dt.hour.isin([0, 12])]
+    figure.update_xaxes(
+        tickvals=marks.dt.tz_localize(None),
+        ticktext=[f"{short_date(stamp)[:3]} 00:00" if stamp.hour == 0 else "12:00"
+                  for stamp in marks])
+    return figure
+
+
+def price_bars(frame: pd.DataFrame, colors: list[str], key: str,
+               keys: list[tuple[str, str, str]]) -> None:
+    """Hourly price estimate in €/kWh as rounded bars coloured by price band."""
+    local = frame.local
+    top = max(frame.price_eur_kwh.max(), 0.01)
+    ticks = nice_ticks(0, top, 4)
+    figure = base_figure(280, ticks, y_format=",.2f")
+    labels = local.dt.strftime("%d/%m %H:%M")
+    figure.add_trace(go.Bar(
+        x=labels, y=frame.price_eur_kwh, marker=dict(color=colors, cornerradius=5),
+        customdata=[f"{short_date(stamp)} · {stamp:%H:%M}" for stamp in local],
+        hovertemplate="%{customdata}<br>Precio estimado · <b>%{y:,.4f} €/kWh</b>"
+                      "<extra></extra>"))
+    every = 2 if len(frame) <= 24 else 4
+    figure.update_layout(bargap=.36, hovermode="closest")
+    figure.update_xaxes(type="category", tickvals=list(labels.iloc[::every]),
+                        ticktext=list(local.iloc[::every].dt.strftime("%H:%M")))
+    show(figure, key, "Precio por horas",
+         "Salida horaria del modelo de precios · €/kWh · hora peninsular.", keys)
+
+
+def recent_line(frame: pd.DataFrame, key: str, title: str, subtitle: str) -> None:
+    """Observed demand line with a soft area and the last point marked."""
+    colors = palette()
+    local = frame.timestamp_local
+    x = local.dt.tz_localize(None)
+    ticks = nice_ticks(frame.demand_mw.min(), frame.demand_mw.max(), 2)
+    figure = base_figure(360, ticks)   # fills the card beside the 8-row table
+    hover = [f"{short_date(stamp)} · {stamp:%H:%M}" for stamp in local]
+    _area_line(figure, x, frame.demand_mw, colors["observed"], ticks[0], ticks[-1],
+               "Demanda real", hover, alpha=.1, width=2)
+    figure.add_trace(go.Scatter(
+        x=[x.iloc[-1]], y=[frame.demand_mw.iloc[-1]], mode="markers", hoverinfo="skip",
+        marker=dict(size=9, color=colors["marker"], line=dict(color=colors["observed"],
+                                                              width=2.5))))
+    marks = local.iloc[[0, len(local) // 2, len(local) - 1]]
+    figure.update_xaxes(tickvals=marks.dt.tz_localize(None),
+                        ticktext=[f"{short_date(stamp)[:3]} {stamp:%H:%M}" for stamp in marks])
+    show(figure, key, title, subtitle)
+
+
+def coverage_figure(labels: list[str], shares: list[float], details: list[str]) -> go.Figure:
+    """Monthly share (0-100 %) of the expected hourly records."""
+    figure = base_figure(170, [0, 50, 100], y_format=",.0f", y_suffix=" %")
+    figure.add_trace(go.Bar(
+        x=labels, y=shares, customdata=details,
+        marker=dict(color=palette()["model"], cornerradius=5),
+        hovertemplate="%{customdata}<extra></extra>"))
+    figure.update_layout(bargap=.5, hovermode="closest")
+    figure.update_xaxes(type="category")
+    return figure
+
+
+def hourly_profile(frame: pd.DataFrame, key: str, simulation: bool = False) -> None:
+    """Mean forecast demand for each local hour of the day."""
+    profile = frame.assign(hour=frame.timestamp_local.dt.hour).groupby("hour").demand_mw.mean()
+    figure = base_figure(260, nice_ticks(0, profile.max(), 4))
+    figure.add_trace(go.Bar(
+        x=[f"{hour:02d}:00" for hour in profile.index], y=profile.values,
+        marker=dict(color=_rgba(palette()["model"], .85), cornerradius=4),
+        hovertemplate="Hora local %{x}<br>Demanda media · %{y:,.0f} MW<extra></extra>"))
+    figure.update_layout(bargap=.3, hovermode="closest")
+    figure.update_xaxes(type="category", tickvals=[f"{hour:02d}:00" for hour in range(0, 24, 3)])
+    show(figure, key, "Perfil horario " + ("simulado" if simulation else "previsto"),
+         "Demanda media de cada hora del día en el horizonte generado · MW.")
+
+
+def official_demand_curves(payload: dict, key: str, prediction: pd.DataFrame | None = None,
                            fallback_records: list[dict] | None = None) -> None:
-    """Overlay ESIOS measured and published demand, preserving native timestamps."""
-    figure = base_figure("Demanda · MW", 390)
-    series = (("real", "Demanda real — REE", OBSERVED, "solid"),
-              ("official_forecast", "Demanda prevista — REE", OFFICIAL, "dash"))
-    any_values = False
-    axis_times: list[pd.Timestamp] = []
+    """ESIOS measured and published demand with the model output, native timestamps."""
+    colors = palette()
+    figure = base_figure(360)
+    series = (("real", "Demanda real — REE", colors["observed"], None),
+              ("official_forecast", "Demanda prevista — REE", colors["official"], "6px,4px"))
+    origin = (prediction.timestamp_utc.min() - pd.Timedelta(hours=1)
+              if prediction is not None and not prediction.empty else None)
+    traces = []
     for key_name, label, color, dash in series:
         source = payload.get("curves", {}).get(key_name, {})
-        frame = pd.DataFrame(source.get("records", []))
+        traces.append((_curve(source.get("records", []), origin if key_name == "real" else None),
+                       label, color, dash, source))
+    if traces[0][0].empty and fallback_records:
+        traces[0] = (_curve(fallback_records, origin), "Demanda real · REData",
+                     colors["observed"], None, {"data_origin": "REData"})
+    keys = []
+    for frame, label, color, dash, source in traces:
         if frame.empty:
             continue
-        frame["timestamp_utc"] = pd.to_datetime(frame.timestamp_utc, utc=True, errors="coerce")
-        frame["demand_mw"] = pd.to_numeric(frame.demand_mw, errors="coerce")
-        frame = frame.dropna().sort_values("timestamp_utc")
-        model_origin = None
-        if prediction is not None and not prediction.empty:
-            model_origin = prediction.timestamp_utc.min() - pd.Timedelta(hours=1)
-        if key_name == "real" and model_origin is not None:
-            frame = frame.loc[frame.timestamp_utc.le(model_origin)]
-        if frame.empty:
-            continue
-        local = frame.timestamp_utc.dt.tz_convert("Europe/Madrid")
-        x = frame.timestamp_utc.dt.tz_localize(None)
-        axis_times.extend(frame.timestamp_utc.tolist())
-        labels = local.map(lambda value: value.strftime("%A %d/%m/%Y %H:%M %Z"))
+        local = frame.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
         resolution = source.get("resolution_minutes")
         cadence = f"{resolution:g} min" if resolution else "nativa"
-        provenance = source.get("data_origin", "sin metadatos")
         figure.add_trace(go.Scattergl(
-            x=x, y=frame.demand_mw, customdata=labels, mode="lines",
-            connectgaps=False, name=label,
-            line=dict(color=color, width=2.2, dash=dash),
-            hovertemplate="%{customdata}<br>" + label + " · %{y:,.1f} MW"
-                          f"<br>Fuente: ESIOS · origen: {provenance}"
-                          f" · resolución observada: {cadence}<extra></extra>"))
-        any_values = True
-    real_records = payload.get("curves", {}).get("real", {}).get("records", [])
-    if not real_records and fallback_records:
-        fallback = pd.DataFrame(fallback_records)
-        if {"timestamp_utc", "demand_mw"}.issubset(fallback.columns):
-            fallback["timestamp_utc"] = pd.to_datetime(
-                fallback.timestamp_utc, utc=True, errors="coerce")
-            fallback["demand_mw"] = pd.to_numeric(fallback.demand_mw, errors="coerce")
-            fallback = fallback.dropna().sort_values("timestamp_utc")
-            if prediction is not None and not prediction.empty:
-                origin = prediction.timestamp_utc.min() - pd.Timedelta(hours=1)
-                fallback = fallback.loc[fallback.timestamp_utc.le(origin)]
-            if not fallback.empty:
-                local = fallback.timestamp_utc.dt.tz_convert("Europe/Madrid")
-                axis_times.extend(fallback.timestamp_utc.tolist())
-                figure.add_trace(go.Scattergl(
-                    x=fallback.timestamp_utc.dt.tz_localize(None), y=fallback.demand_mw,
-                    mode="lines", connectgaps=False, name="Demanda real — REE · REData",
-                    line=dict(color=BLUE, width=2.2),
-                    customdata=local.map(lambda value: value.strftime("%A %d/%m/%Y %H:%M %Z")),
-                    hovertemplate="%{customdata}<br>Demanda real · %{y:,.1f} MW"
-                                  "<br>Fuente: REData · resolución horaria<extra></extra>"))
-                any_values = True
+            x=local.dt.tz_localize(None), y=frame.demand_mw, mode="lines", name=label,
+            line=dict(color=color, width=2, dash=dash),
+            hovertemplate=label + " · %{y:,.0f} MW<br>Origen: "
+            + str(source.get("data_origin", "sin metadatos")) + f" · resolución {cadence}"
+            + "<extra></extra>"))
+        keys.append((color, label, "dash" if dash else "line"))
     if prediction is not None and not prediction.empty:
-        local = prediction.timestamp_utc.dt.tz_convert("Europe/Madrid")
-        origin = prediction.timestamp_utc.min() - pd.Timedelta(hours=1)
-        axis_times.extend(prediction.timestamp_utc.tolist())
+        local = prediction.timestamp_utc.dt.tz_convert(LOCAL_ZONE)
         figure.add_trace(go.Scattergl(
-            x=prediction.timestamp_utc.dt.tz_localize(None), y=prediction.demand_mw,
-            mode="lines+markers", name="Predicción del modelo",
-            line=dict(color=MODEL, width=2.6, dash="dashdot"), marker=dict(size=5),
-            customdata=local.map(lambda value: value.strftime("%A %d/%m/%Y %H:%M %Z")),
-            hovertemplate="%{customdata}<br>Predicción del modelo · %{y:,.1f} MW"
-                          "<br>Resolución: 1 hora<extra></extra>"))
-        figure.add_vline(x=origin.tz_localize(None), line_dash="dot",
-                         line_color=REFERENCE, line_width=1.2)
-        any_values = True
-    figure.update_layout(showlegend=True, hovermode="x unified", dragmode="pan")
-    figure.update_xaxes(fixedrange=False, title="Fecha y hora peninsular",
-                        rangeslider=dict(visible=True, thickness=0.07,
-                                         bgcolor="rgba(148,163,184,.06)",
-                                         bordercolor="rgba(148,163,184,.18)", borderwidth=1))
-    if axis_times:
-        ticks = pd.Series(pd.to_datetime(axis_times, utc=True)).drop_duplicates().sort_values()
-        positions = sorted({int(index * (len(ticks) - 1) / 6) for index in range(7)})
-        selected = ticks.iloc[positions]
-        figure.update_xaxes(
-            tickvals=selected.dt.tz_convert("UTC").dt.tz_localize(None),
-            ticktext=selected.dt.tz_convert("Europe/Madrid").dt.strftime("%d/%m<br>%H:%M %Z"))
-    figure.update_yaxes(fixedrange=False)
-    if not any_values:
+            x=local.dt.tz_localize(None), y=prediction.demand_mw, mode="lines",
+            name="Predicción del modelo", line=dict(color=colors["model"], width=2.5),
+            hovertemplate="Predicción del modelo · %{y:,.0f} MW<extra></extra>"))
+        keys.append((colors["model"], "Predicción del modelo", "line"))
+    if not figure.data:
         st.info("ESIOS no ha devuelto puntos para el intervalo seleccionado.")
         return
-    show(figure, key)
+    figure.update_layout(dragmode="pan")
+    figure.update_xaxes(fixedrange=False, tickformat="%d/%m<br>%H:%M",
+                        rangeslider=dict(visible=True, thickness=.07,
+                                         bgcolor="rgba(148,163,184,.06)"))
+    figure.update_yaxes(fixedrange=False)
+    show(figure, key, "Contexto: demanda real y previsión oficial",
+         "Última semana de REE (ESIOS) junto a la salida del modelo · MW · hora peninsular.",
+         keys, reset=True)
 
 
-def bars(labels: list[str], values, counts, unit: str, key: str,
-         color: str = BLUE, monthly: bool = False, height: int = 270) -> None:
-    figure = base_figure(unit, height)
-    hoverlabels = [month_label(label, full=True) for label in labels] if monthly else labels
-    figure.add_trace(go.Bar(
-        x=labels, y=values, customdata=list(zip(hoverlabels, counts)), marker_color=color,
-        hovertemplate="%{customdata[0]}<br>Media observada · <b>%{y:,.1f} " + unit
-        + "</b><br>%{customdata[1]} registros<extra></extra>",
-    ))
-    figure.update_xaxes(type="category", categoryorder="array", categoryarray=labels)
-    if monthly:
-        years = {label[:4] for label in labels}
-        ticktext = [month_label(label) + (f" {label[:4]}" if len(years) > 1 else "")
-                    for label in labels]
-        figure.update_xaxes(tickvals=labels, ticktext=ticktext)
-    elif len(labels) > 12:
-        figure.update_xaxes(tickvals=labels[::3], ticktext=labels[::3])
-    elif all(label in WEEKDAYS for label in labels):
-        figure.update_xaxes(tickvals=labels, ticktext=[label[:3] for label in labels])
-    show(figure, key)
-
-
-def heatmap(frame: pd.DataFrame, weekdays: list[str]) -> None:
-    cells = frame.assign(day=frame.timestamp.dt.dayofweek, hour=frame.timestamp.dt.hour)
-    matrix = cells.pivot_table(index="day", columns="hour", values="value", aggfunc="mean")
-    matrix = matrix.reindex(index=range(7), columns=range(24))
-    counts = cells.pivot_table(index="day", columns="hour", values="value", aggfunc="count")
-    counts = counts.reindex(index=range(7), columns=range(24)).fillna(0)
-    figure = base_figure("", 320)
-    figure.add_trace(go.Heatmap(
-        z=matrix.to_numpy(), x=[f"{hour:02d}:00" for hour in range(24)], y=weekdays,
-        customdata=counts.to_numpy(),
-        colorscale=[[0, "#0f2530"], [0.5, "#1f7f8f"], [1, OBSERVED]],
-        colorbar=dict(title="MW", orientation="h", y=-0.2, yanchor="top", thickness=9,
-                      len=0.8, tickformat=",.0f", nticks=4), hoverongaps=False,
-        hovertemplate="%{y} · %{x}<br>Demanda histórica · <b>%{z:,.0f} MW</b>"
-        "<br>%{customdata:.0f} registros<extra></extra>",
-    ))
-    figure.update_yaxes(autorange="reversed")
-    figure.update_xaxes(tickvals=[f"{hour:02d}:00" for hour in range(0, 24, 4)])
-    figure.update_layout(margin=dict(l=8, r=12, t=8, b=100))
-    show(figure, "historical_heatmap")
-
-
-def distribution(frame: pd.DataFrame) -> None:
-    figure = base_figure("Número de registros", 300)
-    figure.add_trace(go.Histogram(
-        x=frame.value, nbinsx=35, marker_color=BLUE,
-        hovertemplate="Demanda histórica · %{x:,.0f} MW<br>%{y} registros<extra></extra>",
-    ))
-    figure.update_xaxes(title="Demanda eléctrica · MW", tickformat=",.0f")
-    show(figure, "historical_distribution")
-
-
-def temperature_demand(joined: pd.DataFrame) -> None:
-    figure = base_figure("Demanda · MW", 350)
-    figure.add_trace(go.Scattergl(
-        x=joined.value_weather, y=joined.value_demand, mode="markers",
-        marker=dict(color=BLUE, opacity=0.35, size=5),
-        customdata=[timestamp(value, True) for value in joined.timestamp],
-        hovertemplate="%{customdata}<br>%{x:.1f} °C · %{y:,.0f} MW<extra></extra>",
-    ))
-    figure.update_xaxes(title="Temperatura de Madrid · °C")
-    show(figure, "historical_temperature_demand")
+def _curve(records: list[dict], until: pd.Timestamp | None) -> pd.DataFrame:
+    frame = pd.DataFrame(records)
+    if frame.empty or not {"timestamp_utc", "demand_mw"}.issubset(frame.columns):
+        return pd.DataFrame(columns=["timestamp_utc", "demand_mw"])
+    frame["timestamp_utc"] = pd.to_datetime(frame.timestamp_utc, utc=True, errors="coerce")
+    frame["demand_mw"] = pd.to_numeric(frame.demand_mw, errors="coerce")
+    frame = frame.dropna(subset=["timestamp_utc", "demand_mw"]).sort_values("timestamp_utc")
+    return frame.loc[frame.timestamp_utc.le(until)] if until is not None else frame

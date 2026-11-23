@@ -34,18 +34,33 @@ def timestamp(value: pd.Timestamp, with_zone: bool = False) -> str:
     return value.strftime("%d/%m/%Y · %H:%M" + suffix)
 
 
-def local_datetime(value: str | pd.Timestamp) -> str:
-    """Spanish date and peninsular time, e.g. "30/10/2026 23:00" (UTC if naive)."""
+def local_stamp(value: str | pd.Timestamp) -> pd.Timestamp:
+    """Instant in peninsular time; naive values are taken as UTC."""
     stamp = pd.Timestamp(value)
     if stamp.tzinfo is None:
         stamp = stamp.tz_localize("UTC")
-    return stamp.tz_convert(LOCAL_TZ).strftime("%d/%m/%Y %H:%M")
+    return stamp.tz_convert(LOCAL_TZ)
 
 
-def date_range(frame: pd.DataFrame) -> str:
-    if frame.empty:
-        return "Sin datos en este periodo"
-    return f"{timestamp(frame.timestamp.min())} — {timestamp(frame.timestamp.max())}"
+def local_datetime(value: str | pd.Timestamp) -> str:
+    """Spanish date and peninsular time, e.g. "30/10/2026 23:00" (UTC if naive)."""
+    return local_stamp(value).strftime("%d/%m/%Y %H:%M")
+
+
+def short_date(value: str | pd.Timestamp) -> str:
+    """Compact local date, e.g. "lun 23 nov"."""
+    stamp = local_stamp(value)
+    return f"{WEEKDAYS[stamp.weekday()][:3].lower()} {stamp.day} {MONTHS[stamp.month - 1][:3]}"
+
+
+def short_datetime(value: str | pd.Timestamp) -> str:
+    """Compact local date and time, e.g. "lun 23 nov, 09:50"."""
+    return f"{short_date(value)}, {local_stamp(value):%H:%M}"
+
+
+def clock(value: str | pd.Timestamp) -> str:
+    """Local time of day, e.g. "09:50"."""
+    return local_stamp(value).strftime("%H:%M")
 
 
 def frequency(step: pd.Timedelta | None) -> str:

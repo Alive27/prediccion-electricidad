@@ -16,15 +16,29 @@ const loading = document.querySelector("#loading");
 const hotspotLayer = document.querySelector("#hotspots");
 const config = window.ENERGY_CITY_CONFIG || { demandScale: 0, forecastScale: [] };
 
-if (!canvas || !window.WebGLRenderingContext) {
-  errorBox.style.display = "block";
-} else {
+function startWhenVisible() {
   try {
     startScene();
   } catch (error) {
     console.error("No se pudo iniciar la ciudad energética:", error);
     errorBox.style.display = "block";
   }
+}
+
+if (!canvas || !window.WebGLRenderingContext) {
+  errorBox.style.display = "block";
+} else if (canvas.clientWidth > 0) {
+  startWhenVisible();
+} else {
+  // The dashboard hides the scene on phones and tablets: create no WebGL context and
+  // download no model until the frame actually gets a size.
+  const waiting = new ResizeObserver(() => {
+    if (canvas.clientWidth > 0) {
+      waiting.disconnect();
+      startWhenVisible();
+    }
+  });
+  waiting.observe(canvas);
 }
 
 function startScene() {
@@ -38,8 +52,8 @@ function startScene() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color("#070b11");
-  scene.fog = new THREE.Fog("#070b11", 95, 190);
+  scene.background = new THREE.Color("#0b1016");
+  scene.fog = new THREE.Fog("#0b1016", 95, 190);
   const camera = new THREE.PerspectiveCamera(38, 1, 0.5, 400);
   camera.position.set(60, 52, 64);
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -108,6 +122,7 @@ function startScene() {
     city.add(gltf.scene);
     hotspots = createHotspots({
       root: gltf.scene, scene, camera, canvas, layer: hotspotLayer, onOpen: openSection,
+      labels: config.labels || {},
     });
     const drawCalls = instanceRepeatedMeshes(gltf.scene);
     energyNetwork = createEnergyNetwork(layout.energyRoutes, scene);
@@ -170,25 +185,34 @@ function startScene() {
     return { center, corners };
   }
 
+  // On wide screens the scene fills the whole window behind the dashboard, whose rail,
+  // title and indicators float over it: the city is framed lower and to the right, as in
+  // the Resumen design. Narrower screens show the scene as a card with nothing over it.
+  // Keep in sync with the 1180px media query of styles/dashboard.css.
+  const OVERLAY_MIN_WIDTH = 1180;
+  const hasOverlays = () => canvas.clientWidth >= OVERLAY_MIN_WIDTH;
+
   // Fixed zoom: from the initial aerial three-quarter view (south-east), the
-  // terrain spans the full width of the frame. While orbiting, corners may leave
+  // terrain spans the free width of the frame. While orbiting, corners may leave
   // the frame; the distance never changes.
   function fitCamera() {
     if (!cityFrame) return;
     const { center, corners } = cityFrame;
     const direction = new THREE.Vector3(1, 0.86, 1.05).normalize();
     const probe = camera.clone();
+    probe.clearViewOffset();
     const spans = (distance) => {
       probe.position.copy(center).addScaledVector(direction, distance);
       probe.lookAt(center);
       probe.updateMatrixWorld(true);
       return Math.max(...corners.map((corner) => Math.abs(corner.clone().project(probe).x)));
     };
+    const fill = hasOverlays() ? 0.82 : 1;
     let low = 5;
     let high = 400;
     for (let i = 0; i < 32; i += 1) {
       const mid = (low + high) / 2;
-      if (spans(mid) > 1) low = mid; else high = mid;
+      if (spans(mid) > fill) low = mid; else high = mid;
     }
     const distance = high;
     controls.target.copy(center);
@@ -211,10 +235,9 @@ function startScene() {
     const height = Math.max(1, canvas.clientHeight);
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
-    // Leave the top band of the frame for the KPI cards: shift the view down.
-    // On phones the cards take a taller band, so the city sits lower.
-    const shift = width < 680 ? 0.2 : 0.08;
-    camera.setViewOffset(width, height, 0, -height * shift, width, height);
+    // Move the framed city right and down, clear of the rail and the title panel.
+    if (hasOverlays()) camera.setViewOffset(width, height, -width * 0.1, -height * 0.12, width, height);
+    else camera.clearViewOffset();
     camera.updateProjectionMatrix();
     fitCamera();
   }

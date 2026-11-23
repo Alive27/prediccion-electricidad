@@ -3,6 +3,7 @@
 import streamlit as st
 
 from components.layout import apply_theme, sidebar
+from services import api_client
 from services.data_loader import load_local, load_upload
 from views import data, overview, prediction, prices, system
 
@@ -11,6 +12,10 @@ st.set_page_config(
     page_title="Predicción Eléctrica", page_icon=":material/bolt:", layout="wide",
     initial_sidebar_state="auto",
 )
+if not st.session_state.get("api_warmed_up"):
+    # Fetch what every page needs in the background, so switching pages is instant.
+    st.session_state["api_warmed_up"] = True
+    api_client.warm_up()
 page, theme = sidebar()
 apply_theme(theme)
 datasets = {}

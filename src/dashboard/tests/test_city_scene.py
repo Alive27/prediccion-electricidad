@@ -14,28 +14,26 @@ from components.city_scene import render_city  # noqa: E402
 
 
 class CitySceneTests(unittest.TestCase):
-    def test_scene_uses_local_assets_and_real_metrics_only(self):
-        forecast = {"predictions": [{"demand_mw": 30_500.0} for _ in range(24)]}
-        metrics = {
-            "last_demand_mw": 31_200.0,
-            "last_demand_utc": "2026-11-02T08:00:00+00:00",
-            "demand_fresh": True,
-            "api_state": "API operativa · Modelo listo",
-            "freshness": "Actualizados",
-            "latest_price_eur_mwh": 74.5,
-            "latest_price_utc": "2026-11-02T08:00:00+00:00",
-        }
+    def test_scene_receives_only_light_levels_and_local_assets(self):
+        forecast = {"predictions": [{"demand_mw": 30_000.0} for _ in range(24)]}
         with patch("components.city_scene.st.iframe") as render:
-            render_city(metrics, forecast)
+            render_city(32_000.0, forecast, {"Modelo": "Pico 33.480 MW · 20:00"})
         url = render.call_args.args[0]
-        query = parse_qs(urlparse(url).query)
-        payload = json.loads(query["metrics"][0])
-        self.assertTrue(url.startswith("/app/static/city/index.html?metrics="))
-        self.assertEqual(payload["demand"], 31_200.0)
-        self.assertEqual(payload["price"], 74.5)
-        self.assertEqual(len(payload["forecastScale"]), 24)
+        payload = json.loads(parse_qs(urlparse(url).query)["config"][0])
+        self.assertTrue(url.startswith("/app/static/city/index.html?config="))
+        self.assertEqual(set(payload), {"demandScale", "forecastScale", "navigation", "labels"})
+        self.assertEqual(payload["labels"], {"Modelo": "Pico 33.480 MW · 20:00"})
+        self.assertAlmostEqual(payload["demandScale"], 0.8)
+        self.assertEqual(payload["forecastScale"], [0.75] * 24)
         self.assertNotIn("cdn.", url.lower())
         self.assertEqual(render.call_args.kwargs["height"], 690)
+
+    def test_missing_demand_turns_the_city_lights_off_instead_of_inventing_them(self):
+        with patch("components.city_scene.st.iframe") as render:
+            render_city(None, {})
+        payload = json.loads(parse_qs(urlparse(render.call_args.args[0]).query)["config"][0])
+        self.assertEqual(payload["demandScale"], 0.0)
+        self.assertEqual(payload["forecastScale"], [])
 
     def test_zoom_is_fixed_wheel_scrolls_page_and_listener_is_cleaned_up(self):
         script = (DIRECTORY / "static" / "city" / "city.js").read_text(encoding="utf-8")
@@ -49,8 +47,8 @@ class CitySceneTests(unittest.TestCase):
 
     def test_city_buildings_open_every_section_through_the_sidebar_keys(self):
         with patch("components.city_scene.st.iframe") as render:
-            render_city({}, {})
-        payload = json.loads(parse_qs(urlparse(render.call_args.args[0]).query)["metrics"][0])
+            render_city(None, {})
+        payload = json.loads(parse_qs(urlparse(render.call_args.args[0]).query)["config"][0])
         self.assertEqual(payload["navigation"], {
             "Resumen": "nav_0", "Modelo": "nav_1", "Precios": "nav_2", "Datos": "nav_3",
             "Estado del sistema": "nav_4"})

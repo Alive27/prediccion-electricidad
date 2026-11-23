@@ -103,22 +103,3 @@ def prepare(kind: str, raw: pd.DataFrame, source: str) -> Dataset:
     if dataset.frame.empty:
         dataset.errors = ("No hay fechas y valores válidos para analizar.",)
     return dataset
-
-
-def aligned_data(demand: Dataset, weather: Dataset) -> tuple[pd.DataFrame, str]:
-    """Join only unique, timezone-aware instants, with one-to-one validation."""
-    pending = ("El análisis conjunto temperatura-demanda está pendiente de validar "
-               "la alineación temporal de ambos datasets.")
-    if not demand.available or not weather.available:
-        return pd.DataFrame(), "Se necesitan ambos históricos para el análisis conjunto."
-    for dataset in (demand, weather):
-        if not dataset.quality.get("timezone") or dataset.quality.get("duplicate_times"):
-            return pd.DataFrame(), pending
-    left = demand.frame.assign(timestamp=demand.frame.timestamp.dt.tz_convert("UTC"))
-    right = weather.frame.assign(timestamp=weather.frame.timestamp.dt.tz_convert("UTC"))
-    joined = left.merge(right, on="timestamp", suffixes=("_demand", "_weather"),
-                        validate="one_to_one")
-    if joined.empty:
-        return joined, "Los datasets no tienen instantes comunes; no se desplazan las fechas."
-    joined["timestamp"] = joined.timestamp.dt.tz_convert(LOCAL_TZ)
-    return joined, "Unión exacta de instantes UTC, sin interpolación ni desplazamientos."

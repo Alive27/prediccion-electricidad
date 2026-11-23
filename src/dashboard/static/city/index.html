@@ -6,15 +6,13 @@
   <meta name="color-scheme" content="dark">
   <title>Ciudad energética 3D</title>
   <style>
-    /* Same tokens as the dashboard (styles/dashboard.css, dark appearance). */
+    /* The indicators and the interaction hint live in the dashboard (views/overview.py);
+       this page only draws the scene and its section hotspots, in the "Vision" glass style. */
     :root {
-      --bg: #070b11; --surface: rgba(24, 33, 46, .46); --surface-2: rgba(255, 255, 255, .04);
-      --sheen: linear-gradient(180deg, rgba(255, 255, 255, .08), rgba(255, 255, 255, .015) 46%);
-      --line: rgba(255, 255, 255, .08); --line-strong: rgba(255, 255, 255, .14);
-      --ink: #e9eef5; --ink-2: #a7b2c0; --ink-3: #6f7b8b;
-      --accent: #35d0e0; --success: #3ddc97; --warning: #f2b45a; --danger: #ff6b6b;
-      --r-lg: 16px; --r-md: 12px; --ease: cubic-bezier(.2, .8, .2, 1);
-      --blur: saturate(160%) blur(22px);
+      --bg: #0b1016; --glass: rgba(30, 36, 44, .55); --edge: rgba(255, 255, 255, .18);
+      --ink: #ffffff; --ink-2: rgba(255, 255, 255, .74); --ink-3: rgba(255, 255, 255, .58);
+      --accent: #64d2ff; --danger: #ff6961;
+      --ease: cubic-bezier(.2, .8, .2, 1); --blur: blur(24px) saturate(170%);
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
@@ -22,37 +20,9 @@
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text",
         "Segoe UI", Inter, Roboto, sans-serif;
       color: var(--ink); -webkit-font-smoothing: antialiased;
-      background:
-        radial-gradient(ellipse 70% 55% at 55% 72%, rgba(53, 208, 224, .10), transparent 70%),
-        radial-gradient(ellipse at 50% 60%, #0c141d 0%, var(--bg) 62%, #04070b 100%);
+      background: radial-gradient(ellipse at 50% 62%, #15202b 0%, var(--bg) 64%, #070a0e 100%);
     }
     #city { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-    .overlay { position: absolute; z-index: 2; left: 20px; right: 20px; top: 18px; pointer-events: none; }
-    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
-    .title { font-size: 11px; font-weight: 650; letter-spacing: .14em; color: var(--accent); }
-    .sub { font-size: 12px; color: var(--ink-3); margin-top: 5px; }
-    .status {
-      display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600;
-      border: 1px solid color-mix(in srgb, var(--success) 30%, transparent); border-radius: 999px;
-      padding: 6px 11px; background: var(--surface); color: var(--success); white-space: nowrap;
-      backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-    }
-    .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-    .status.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 32%, transparent); }
-    .status.down { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 32%, transparent); }
-    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
-    .kpi {
-      min-width: 0; border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px;
-      background: var(--sheen), var(--surface); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-      box-shadow: 0 1px 0 rgba(255, 255, 255, .08) inset, 0 10px 30px rgba(0, 0, 0, .3);
-    }
-    .kpi-label { font-size: 10px; letter-spacing: .1em; color: var(--ink-3); font-weight: 650; }
-    .kpi-value {
-      margin-top: 7px; font-size: clamp(18px, 2.2vw, 24px); font-weight: 650;
-      letter-spacing: -.025em; color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums;
-    }
-    .kpi-value small { font-size: 11px; color: var(--ink-3); letter-spacing: 0; font-weight: 500; }
-    .kpi-detail { margin-top: 4px; color: var(--ink-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #hotspots { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
     .hotspot {
       position: absolute; left: 0; top: 0; padding: 0; border: 0; background: none;
@@ -61,62 +31,47 @@
     .hs-body {
       position: absolute; left: 0; bottom: calc(12px + var(--lift, 0px)); transform: translateX(-50%);
       display: flex; align-items: center; gap: 9px; white-space: nowrap;
-      padding: 8px 10px 8px 11px; border-radius: var(--r-md);
-      border: 1px solid color-mix(in srgb, var(--c) 40%, var(--line));
-      background: rgba(12, 18, 26, .86); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-      box-shadow: 0 1px 0 rgba(255, 255, 255, .06) inset, 0 8px 22px rgba(0, 0, 0, .4);
-      transition: transform 180ms var(--ease), box-shadow 180ms var(--ease), border-color 180ms var(--ease);
+      padding: 6px 14px 6px 6px; border-radius: 999px; background: var(--glass);
+      box-shadow: 0 0 0 1px var(--edge) inset, 0 12px 30px rgba(0, 0, 0, .35);
+      backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+      transition: transform 180ms var(--ease), background 180ms var(--ease);
     }
-    .hs-body::after {
-      content: ""; position: absolute; left: 50%; top: 100%; width: 2px;
-      height: calc(12px + var(--lift, 0px));
-      transform: translateX(-50%); background: linear-gradient(var(--c), transparent);
+    .hs-dot {
+      display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+      background: color-mix(in srgb, var(--c) 22%, transparent);
     }
-    .hs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+    .hs-dot::before {
+      content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 28%, transparent);
+    }
     .hs-text { display: grid; gap: 1px; text-align: left; }
-    .hs-text strong { font-size: 12px; font-weight: 650; color: var(--ink); }
-    .hs-text small { font-size: 10.5px; color: var(--ink-2); }
-    .hs-go { display: grid; color: var(--c); transition: transform 180ms var(--ease); }
-    .hs-go svg { width: 14px; height: 14px; }
+    .hs-text strong { font-size: 12.5px; font-weight: 650; color: var(--ink); }
+    .hs-text small { font-size: 11px; color: var(--ink-2); }
     .hotspot:hover .hs-body, .hotspot.active .hs-body, .hotspot:focus-visible .hs-body {
-      transform: translateX(-50%) translateY(-2px); border-color: var(--c);
-      box-shadow: 0 1px 0 rgba(255, 255, 255, .08) inset, 0 10px 26px rgba(0, 0, 0, .45);
+      transform: translateX(-50%) translateY(-2px); background: rgba(44, 52, 62, .72);
     }
-    .hotspot:hover .hs-go, .hotspot.active .hs-go { transform: translateX(3px); }
     .hotspot:focus-visible { outline: none; }
-    .hotspot:focus-visible .hs-body { outline: 2px solid var(--c); outline-offset: 2px; }
+    .hotspot:focus-visible .hs-body { box-shadow: 0 0 0 2px var(--accent), 0 12px 30px rgba(0, 0, 0, .35); }
     #loading {
       position: absolute; z-index: 1; inset: 50% 16px auto; display: grid; justify-items: center; gap: 12px;
-      color: var(--ink-3); font-size: 11px; font-weight: 600; letter-spacing: .14em; pointer-events: none;
+      color: var(--ink-3); font-size: 11px; font-weight: 600; letter-spacing: .12em; pointer-events: none;
     }
     #loading::before {
       content: ""; width: 26px; height: 26px; border-radius: 50%;
-      border: 2px solid rgba(53, 208, 224, .18); border-top-color: var(--accent);
+      border: 2px solid rgba(100, 210, 255, .18); border-top-color: var(--accent);
       animation: spin 900ms linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .foot {
-      position: absolute; z-index: 2; bottom: 9px; left: 18px; right: 18px; gap: 12px;
-      display: flex; justify-content: space-between; color: var(--ink-3); font-size: 10px; pointer-events: none;
-    }
     #error {
       display: none; position: absolute; z-index: 3; inset: 44% 16px auto; text-align: center;
-      color: var(--ink); font-size: 13px; padding: 16px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
-      border-radius: var(--r-md); background: rgba(16, 23, 32, .94);
+      color: var(--ink); font-size: 13px; padding: 16px; border-radius: 18px;
+      background: rgba(30, 36, 44, .92); box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent) inset;
     }
     @media (max-width: 680px) {
-      .overlay { left: 10px; right: 10px; top: 10px; }
-      .topline { flex-direction: column; gap: 8px; }
-      .topline .sub { display: none; }
-      .status { white-space: normal; padding: 5px 10px; font-size: 10px; }
-      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
-      .kpi { padding: 8px 10px; border-radius: var(--r-md); }
-      .kpi-value { font-size: 17px; margin-top: 4px; }
-      .kpi-detail { font-size: 9px; }
       .hs-text small { display: none; }
-      .hs-body { padding: 6px 9px; }
-      .foot span:last-child { display: none; }
-    }
+      .hs-body { padding: 4px 11px 4px 4px; gap: 7px; }
+      .hs-dot { width: 20px; height: 20px; }
+        }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition: none !important; animation-duration: 1ms !important; }
     }
@@ -124,26 +79,10 @@
 </head>
 <body>
   <canvas id="city" aria-label="Ciudad 3D representativa de la demanda eléctrica agregada peninsular"></canvas>
-  <div class="overlay">
-    <div class="topline">
-      <div>
-        <div class="title">SISTEMA ELÉCTRICO · PENÍNSULA</div>
-        <div class="sub">Representación de demanda agregada · no geográfica ni por edificio</div>
-      </div>
-      <div id="status" class="status"></div>
-    </div>
-    <div class="cards">
-      <div class="kpi"><div class="kpi-label">DEMANDA OBSERVADA</div><div id="demand" class="kpi-value">—</div><div class="kpi-detail">Última observación real</div></div>
-      <div class="kpi"><div class="kpi-label">PRÓXIMA HORA</div><div id="next-hour" class="kpi-value">—</div><div class="kpi-detail">Salida del modelo de demanda</div></div>
-      <div class="kpi"><div class="kpi-label">HORIZONTE 24 H</div><div id="next-day" class="kpi-value">—</div><div class="kpi-detail">Estimación a 24 horas</div></div>
-      <div class="kpi"><div id="price-label" class="kpi-label">PRECIO ELÉCTRICO</div><div id="price" class="kpi-value">—</div><div id="price-detail" class="kpi-detail">Fuente no disponible</div></div>
-    </div>
-  </div>
-  <div class="foot"><span id="timestamps"></span><span>INTENSIDAD LUMÍNICA · DEMANDA AGREGADA</span></div>
   <div id="hotspots" aria-label="Accesos a las secciones del dashboard"></div>
   <div id="loading">CARGANDO CIUDAD 3D…</div>
   <div id="error">La escena 3D no está disponible en este navegador. Los indicadores siguen mostrando los datos de la API.</div>
-  <script src="./metrics.js?v=2"></script>
-  <script type="module" src="./city.js?v=17"></script>
+  <script src="./config.js?v=1"></script>
+  <script type="module" src="./city.js?v=23"></script>
 </body>
 </html>

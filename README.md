@@ -104,7 +104,7 @@ uvicorn main:app --app-dir src/api --host 127.0.0.1 --port 8000
 
 En otra terminal, configura la URL de la API y ejecuta Streamlit:
 ```powershell
-$env:API_BASE_URL = "http://localhost:8000"
+$env:API_BASE_URL = "http://127.0.0.1:8000"
 streamlit run src/dashboard/app.py
 ```
 *(Dentro de Compose el dashboard utiliza `http://api:8000`)*.

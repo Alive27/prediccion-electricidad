@@ -60,3 +60,9 @@ def upload_fallback(dataset: Dataset) -> Dataset:
                 for message in result.errors:
                     st.write(message)
     return dataset
+
+
+def discard_manual(kind: str) -> None:
+    """Forget a manually uploaded Parquet so the local file is used again."""
+    st.session_state.pop(f"manual_{kind}", None)
+    st.session_state.pop(f"upload_{kind}", None)
