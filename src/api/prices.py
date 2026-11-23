@@ -26,9 +26,10 @@ def _check_pvpc(indicator: dict) -> None:
     """Reject any answer that is not the peninsular PVPC price in €/MWh."""
     if int(indicator.get("id", -1)) != PVPC_INDICATOR:
         raise DataUnavailable("ESIOS devolvió un indicador distinto del PVPC 1001.")
-    name = str(indicator.get("name", "")).lower()
-    if "pvpc" not in name or ("peníns" not in name and "penins" not in name):
-        raise DataUnavailable("ESIOS no confirma PVPC peninsular en la respuesta.")
+    # The geography is confirmed below by geo_id: ESIOS no longer says "Península" in the name.
+    name = f'{indicator.get("name", "")} {indicator.get("short_name", "")}'.lower()
+    if "pvpc" not in name:
+        raise DataUnavailable("ESIOS no confirma PVPC en la respuesta.")
     magnitude_text = " ".join(
         str(value) for magnitude in indicator.get("magnitud", []) if isinstance(magnitude, dict)
         for value in (magnitude.get("name", ""), magnitude.get("unit", ""))).lower()
