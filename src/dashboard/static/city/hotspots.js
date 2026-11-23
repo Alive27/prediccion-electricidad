@@ -21,10 +21,6 @@ export const SECTIONS = [
   },
 ];
 
-// Inline SVG (never a text glyph, which some devices render as an emoji).
-const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" '
-  + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
-
 function gradientTexture(radial) {
   const size = 64;
   const canvas = document.createElement("canvas");
@@ -55,7 +51,7 @@ function auraMaterial(color, map, opacity, side = THREE.DoubleSide) {
  * Marks the section buildings, adds a coloured aura around each one and a
  * labelled button above it. Must run before repeated meshes are instanced.
  */
-export function createHotspots({ root, scene, camera, canvas, layer, onOpen }) {
+export function createHotspots({ root, scene, camera, canvas, layer, onOpen, labels = {} }) {
   root.updateMatrixWorld(true);
   const wallMap = gradientTexture(false);
   const groundMap = gradientTexture(true);
@@ -125,10 +121,13 @@ export function createHotspots({ root, scene, camera, canvas, layer, onOpen }) {
     label.type = "button";
     label.className = "hotspot";
     label.style.setProperty("--c", section.color);
-    label.setAttribute("aria-label", `Abrir ${section.title}: ${section.subtitle}`);
-    label.innerHTML = `<span class="hs-body"><span class="hs-dot"></span><span class="hs-text">`
-      + `<strong>${section.title}</strong><small>${section.subtitle}</small></span>`
-      + `<span class="hs-go">${CHEVRON}</span></span>`;
+    // The live value sent by the dashboard (e.g. "Pico 33.480 MW · 20:00"), else a description.
+    const detail = labels[section.page] || section.subtitle;
+    label.setAttribute("aria-label", `Abrir ${section.title}: ${detail}`);
+    label.innerHTML = '<span class="hs-body"><span class="hs-dot"></span><span class="hs-text">'
+      + "<strong></strong><small></small></span></span>";
+    label.querySelector("strong").textContent = section.title;
+    label.querySelector("small").textContent = detail;
     label.addEventListener("click", () => onOpen(section));
     label.addEventListener("pointerenter", () => setHover(section.page));
     label.addEventListener("pointerleave", () => setHover(null));
