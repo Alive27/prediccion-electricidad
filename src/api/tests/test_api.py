@@ -94,7 +94,7 @@ class ApiContractTests(unittest.TestCase):
             api.app.state.prediction_store = original
 
     def test_curves_endpoint_reports_missing_esios_credential_without_hiding_it(self):
-        self.service.esios_token = ""
+        self.service.esios.token = ""
         curves = self.client.get("/curves", params={"hours": 24})
         self.assertEqual(curves.status_code, 200)
         self.assertEqual(curves.json()["curves"]["real"]["status"], "not_configured")
