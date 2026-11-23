@@ -142,6 +142,20 @@ docker compose up --build
 *   `POST /prices/predict`: cuerpo `{"horizon_hours":24}`; acepta 6, 12, 24 o 48 y devuelve estimaciones etiquetadas como salida del modelo.
 *   `GET /predictions/tracking?days=7`: previsiones de demanda registradas en la base de datos frente a la demanda real publicada después, con su error medio (MAE y MAPE).
 
+### Estructura del código de la API (`src/api/`)
+
+| Módulo | Responsabilidad |
+|---|---|
+| `main.py` | Aplicación FastAPI: configuración, carga de modelos al arrancar y rutas. |
+| `demand.py` | `DemandService`: demanda real (REData), temperatura (Open-Meteo), comprobaciones de `/ready` y previsión recursiva. |
+| `prices.py` | `PriceService`: histórico PVPC (ESIOS 1001) y estimación del modelo de precios. |
+| `esios.py` | Curvas oficiales de ESIOS (demanda real y prevista) con caché en disco. |
+| `evaluation.py` | Evaluación retrospectiva del modelo de demanda sobre el histórico de 2024. |
+| `features.py` | Contrato de variables de los dos modelos y construcción de la fila de entrada. |
+| `artifacts.py` | Carga y validación de los artefactos `.joblib`. |
+| `prediction_store.py` | Registro de previsiones en la tabla `predictions` (Supabase). |
+| `common.py` | Errores, utilidades de fechas, peticiones HTTP y limpieza de series. |
+
 ### Base de datos (Supabase)
 
 El esquema de `schema_bbdd.sql` está creado en PostgreSQL (Supabase) y tiene dos usos:

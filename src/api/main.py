@@ -1,7 +1,7 @@
-"""FastAPI entry point for the existing demand model."""
+"""FastAPI entry point: demand and price forecasts, source status and the forecast log."""
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 import logging
 import os
 from pathlib import Path
@@ -10,9 +10,11 @@ from typing import Literal
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
+from artifacts import load_model, load_price_model
+from common import DataUnavailable, ModelUnavailable
+from demand import DemandService
 from prediction_store import PredictionStore
-from service import (DataUnavailable, DemandService, ModelUnavailable,
-                     PriceService, load_model, load_price_model)
+from prices import PriceService
 
 
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "/models/modelo_demanda_v01.joblib"))
@@ -20,50 +22,51 @@ PRICE_MODEL_PATH = Path(os.getenv("PRICE_MODEL_PATH", "/models/modelo_precio_v01
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data/raw"))
 FRESHNESS_HOURS = int(os.getenv("MAX_DEMAND_AGE_HOURS", "6"))
 LOGGER = logging.getLogger(__name__)
+Horizon = Literal[6, 12, 24, 48]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.prediction_store = PredictionStore(os.getenv("DATABASE_URL"))
-    # Curves can be inspected even if the ML artifact fails validation/loading.
+    # The official curves stay available even if the demand artifact fails to load.
     app.state.curve_service = DemandService(None, {}, DATA_DIR)
+    app.state.service = None
     try:
         model, model_info = load_model(MODEL_PATH)
-        app.state.service = DemandService(model, model_info, DATA_DIR,
-                                          FRESHNESS_HOURS)
+        app.state.service = DemandService(model, model_info, DATA_DIR, FRESHNESS_HOURS)
         app.state.curve_service = app.state.service
     except Exception as error:
-        app.state.service = None
-        app.state.model_error = (
-            f"No se pudo cargar el modelo ({type(error).__name__}): {error}")
+        app.state.model_error = f"No se pudo cargar el modelo ({type(error).__name__}): {error}"
         LOGGER.exception("No se pudo cargar o validar el artefacto de demanda.")
+
     try:
         price_model, price_info = load_price_model(PRICE_MODEL_PATH)
-        app.state.price_service = PriceService(
-            price_model, price_info, os.getenv("ESIOS_API_TOKEN", ""),
-            Path(os.getenv("ESIOS_CACHE_DIR", str(DATA_DIR.parent / "cache"))))
         app.state.price_model_error = None
     except Exception as error:
-        app.state.price_service = PriceService(
-            None, {"error": f"No se pudo cargar el modelo de precios ({type(error).__name__})."},
-            os.getenv("ESIOS_API_TOKEN", ""),
-            Path(os.getenv("ESIOS_CACHE_DIR", str(DATA_DIR.parent / "cache"))))
+        price_model = None
+        price_info = {"error": f"No se pudo cargar el modelo de precios ({type(error).__name__})."}
         app.state.price_model_error = f"{type(error).__name__}: {error}"
         LOGGER.exception("No se pudo cargar el modelo de precios.")
+    app.state.price_service = PriceService(
+        price_model, price_info, os.getenv("ESIOS_API_TOKEN", ""),
+        Path(os.getenv("ESIOS_CACHE_DIR", str(DATA_DIR.parent / "cache"))))
     yield
 
 
-app = FastAPI(title="Predicción de demanda eléctrica", version="0.1.0",
-              lifespan=lifespan)
+app = FastAPI(title="Predicción de demanda eléctrica", version="0.1.0", lifespan=lifespan)
 
 
 class PredictionRequest(BaseModel):
-    horizon_hours: Literal[6, 12, 24, 48]
+    horizon_hours: Horizon
     allow_stale_simulation: bool = False
 
 
 class PricePredictionRequest(BaseModel):
-    horizon_hours: Literal[6, 12, 24, 48]
+    horizon_hours: Horizon
+
+
+def _model_error() -> str:
+    return getattr(app.state, "model_error", "Modelo no disponible.")
 
 
 def get_service() -> DemandService:
@@ -76,22 +79,21 @@ def get_service() -> DemandService:
     return service
 
 
+def _unavailable(error: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(error))
+
+
 @app.get("/health")
 def health():
     """Liveness probe: reports the process without calling external sources."""
-    service = getattr(app.state, "service", None)
-    loaded = service is not None
-    return {
-        "status": "alive", "api": True, "model_loaded": loaded,
-        "model_schema_valid": loaded,
-        "reason": None if loaded else getattr(
-            app.state, "model_error", "Modelo no disponible."),
-    }
+    loaded = getattr(app.state, "service", None) is not None
+    return {"status": "alive", "api": True, "model_loaded": loaded,
+            "model_schema_valid": loaded, "reason": None if loaded else _model_error()}
 
 
 @app.get("/ready")
 def readiness(refresh: bool = False):
-    """Readiness probe checks the model contract and current external inputs."""
+    """Readiness probe: model contract and current external inputs (503 if not ready)."""
     service = getattr(app.state, "service", None)
     if service is None:
         status = {
@@ -101,8 +103,7 @@ def readiness(refresh: bool = False):
             "demand_source_status": "unavailable", "weather_source_status": "unavailable",
             "demand_fresh": False, "historical_features_available": False,
             "forecast_weather_available": False, "model_inputs_available": False,
-            "future_forecast_available": False,
-            "reason": getattr(app.state, "model_error", "Modelo no disponible."),
+            "future_forecast_available": False, "reason": _model_error(),
         }
     else:
         if refresh:
@@ -124,7 +125,7 @@ def history(limit: int = Query(default=168, ge=1, le=8784),
     try:
         return get_service().history(limit, start, end)
     except DataUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        raise _unavailable(error) from error
 
 
 @app.get("/curves")
@@ -142,18 +143,17 @@ def compare_sources(hours: int = Query(default=48, ge=1, le=720)):
 @app.post("/predict")
 def predict(request: PredictionRequest, background_tasks: BackgroundTasks):
     try:
-        forecast = get_service().predict(request.horizon_hours,
-                                         request.allow_stale_simulation)
-        # Current forecasts are logged after responding; simulations are never stored.
-        background_tasks.add_task(app.state.prediction_store.save_forecast, forecast)
-        return forecast
+        forecast = get_service().predict(request.horizon_hours, request.allow_stale_simulation)
     except DataUnavailable as error:
         raise HTTPException(status_code=503, detail={
             "message": "No se puede generar una previsión futura válida.",
             "reason": str(error),
         }) from error
     except ModelUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        raise _unavailable(error) from error
+    # Logged after responding; the store itself skips historical simulations.
+    background_tasks.add_task(app.state.prediction_store.save_forecast, forecast)
+    return forecast
 
 
 @app.get("/predictions/tracking")
@@ -163,8 +163,7 @@ def prediction_tracking(days: int = Query(default=7, ge=1, le=90)):
     service = getattr(app.state, "service", None)
     if store.configured and service is not None:
         try:
-            observed = service._clean_demand(service.demand_data(), datetime.now(UTC))
-            store.record_actuals(observed)
+            store.record_actuals(service.observed_demand())
         except Exception as error:  # the log must never break the endpoint
             LOGGER.warning("No se pudo obtener la demanda real para el registro: %s", error)
     return store.tracking(days)
@@ -175,7 +174,7 @@ def evaluation():
     try:
         return get_service().evaluation()
     except DataUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        raise _unavailable(error) from error
 
 
 @app.get("/prices/history")
@@ -187,8 +186,8 @@ def price_history(days: int = Query(default=1, ge=1, le=7)):
 
 @app.get("/prices/model")
 def price_model_info():
-    return {"loaded": app.state.price_service.model is not None,
-            "model": app.state.price_service.model_info,
+    service = app.state.price_service
+    return {"loaded": service.model is not None, "model": service.model_info,
             "error": app.state.price_model_error}
 
 
@@ -197,4 +196,4 @@ def predict_price(request: PricePredictionRequest):
     try:
         return app.state.price_service.predict(request.horizon_hours)
     except ModelUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        raise _unavailable(error) from error

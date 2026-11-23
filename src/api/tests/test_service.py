@@ -12,8 +12,11 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from service import (DataUnavailable, DemandService, FEATURES, ModelUnavailable,  # noqa: E402
-                     PRICE_FEATURES, PriceService, load_price_model, prepare_features)  # noqa: E402
+from artifacts import load_price_model  # noqa: E402
+from common import DataUnavailable, ModelUnavailable  # noqa: E402
+from demand import DemandService  # noqa: E402
+from features import FEATURES, PRICE_FEATURES, prepare_features  # noqa: E402
+from prices import PriceService  # noqa: E402
 
 
 class PriceServiceTests(unittest.TestCase):
@@ -64,7 +67,7 @@ class PriceServiceTests(unittest.TestCase):
         response.json.return_value = payload
         response.raise_for_status.return_value = None
         service = PriceService(None, {}, "unit-test-token")
-        with patch("service.requests.get", return_value=response):
+        with patch("prices.requests.get", return_value=response):
             result = service.history(1)
         self.assertEqual(result["indicator_id"], 1001)
         self.assertEqual(result["unit"], "€/MWh")
@@ -72,7 +75,7 @@ class PriceServiceTests(unittest.TestCase):
 
     def test_history_failure_is_explicit_and_never_fabricates_data(self):
         service = PriceService(None, {}, "unit-test-token")
-        with patch("service.requests.get", side_effect=requests.ConnectionError):
+        with patch("prices.requests.get", side_effect=requests.ConnectionError):
             result = service.history(1)
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(result["records"], [])
@@ -115,7 +118,7 @@ class DemandServiceTests(unittest.TestCase):
     def make_service(self, data_dir=Path("/no-local-data")):
         service = DemandService(self.ConstantModel(), {"model_type": "TestModel"}, data_dir)
         service.live_cache_path = None
-        service.esios_cache_dir = data_dir / "test-esios-cache"
+        service.esios.cache_dir = data_dir / "test-esios-cache"
         return service
 
     def test_weather_archive_recovers_missing_real_hours_for_model_window(self):
@@ -178,7 +181,7 @@ class DemandServiceTests(unittest.TestCase):
     def test_esios_curves_parse_official_ids_and_retain_native_resolution(self):
         with tempfile.TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))
-            service.esios_token = "test-only-token"
+            service.esios.token = "test-only-token"
             now = pd.Timestamp.now(tz="UTC").floor("5min")
 
             def response_for(url, **kwargs):
@@ -206,7 +209,7 @@ class DemandServiceTests(unittest.TestCase):
 
     def test_esios_missing_token_does_not_block_or_claim_connection(self):
         service = self.make_service()
-        service.esios_token = ""
+        service.esios.token = ""
         curves = service.esios_curves(hours=24)
         self.assertEqual(curves["curves"]["real"]["status"], "not_configured")
         self.assertIn("ESIOS_API_TOKEN", curves["curves"]["real"]["error"])
@@ -215,16 +218,16 @@ class DemandServiceTests(unittest.TestCase):
     def test_esios_cached_values_are_marked_as_cache_when_token_is_missing(self):
         with tempfile.TemporaryDirectory() as directory:
             service = self.make_service(Path(directory))
-            service.esios_cache_dir.mkdir(parents=True)
+            service.esios.cache_dir.mkdir(parents=True)
             now = pd.Timestamp.now(tz="UTC").floor("5min")
-            path = service.esios_cache_dir / "esios_real.parquet"
+            path = service.esios.cache_dir / "esios_real.parquet"
             pd.DataFrame({"timestamp_utc": [now], "value": [30_000.]}).to_parquet(path)
             path.with_suffix(".json").write_text(json.dumps({
                 "status": "connected",
                 "last_success_at_utc": (now - pd.Timedelta(hours=1)).isoformat(),
                 "resolution_minutes": 5.0,
             }), encoding="utf-8")
-            service.esios_token = ""
+            service.esios.token = ""
             result = service.esios_curves(24)["curves"]["real"]
         self.assertEqual(result["status"], "not_configured")
         self.assertEqual(result["data_origin"], "cache")
